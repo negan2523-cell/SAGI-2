@@ -255,7 +255,7 @@ def _geometria_ruta(
     lats: list[float | None] = []
     lons: list[float | None] = []
     anterior_doble: bool | None = None
-    desplazamiento_m = 5.0
+    desplazamiento_m = 2.5
 
     for a, b in zip(nodos, nodos[1:]):
         doble = (a, b) in aristas_bidireccionales
@@ -318,7 +318,7 @@ def _flechas_ruta(
     if not segmentos:
         return [], []
 
-    cantidad = min(12, max(2, round(distancia_total / 450)))
+    cantidad = min(30, max(2, round(distancia_total / 200)))
     distancias_objetivo = [
         distancia_total * (idx + 1) / (cantidad + 1) for idx in range(cantidad)
     ]
@@ -337,13 +337,13 @@ def _flechas_ruta(
             lon = lon1 + (lon2 - lon1) * fraccion
             ux, uy = este / longitud, norte / longitud
             escala_lon = 111_320 * math.cos(math.radians(lat))
-            punta = (ux * 26, uy * 26)
-            hombro_izq = (ux * 3 - uy * 14, uy * 3 + ux * 14)
-            cuello_izq = (ux * 3 - uy * 4, uy * 3 + ux * 4)
-            cola_izq = (-ux * 20 - uy * 4, -uy * 20 + ux * 4)
-            cola_der = (-ux * 20 + uy * 4, -uy * 20 - ux * 4)
-            cuello_der = (ux * 3 + uy * 4, uy * 3 - ux * 4)
-            hombro_der = (ux * 3 + uy * 14, uy * 3 - ux * 14)
+            punta = (ux * 16, uy * 16)
+            hombro_izq = (ux * 2 - uy * 8, uy * 2 + ux * 8)
+            cuello_izq = (ux * 2 - uy * 2.5, uy * 2 + ux * 2.5)
+            cola_izq = (-ux * 12 - uy * 2.5, -uy * 12 + ux * 2.5)
+            cola_der = (-ux * 12 + uy * 2.5, -uy * 12 - ux * 2.5)
+            cuello_der = (ux * 2 + uy * 2.5, uy * 2 - ux * 2.5)
+            hombro_der = (ux * 2 + uy * 8, uy * 2 - ux * 8)
             vertices = [
                 cola_izq,
                 cuello_izq,
