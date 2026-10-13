@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+data/suba_instancia.json
+data/*.graphml
+data/*.pkl
+.env
+.DS_Store
+Thumbs.db
