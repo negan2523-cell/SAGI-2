@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -837,4 +838,8 @@ def chat(_enviar, _enter, _limpiar, pregunta, historial, *valores):
 
 
 if __name__ == "__main__":
-    app.run(debug=False, host="127.0.0.1", port=8051)
+    app.run(
+        debug=False,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8051)),
+    )
