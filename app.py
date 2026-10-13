@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -228,7 +229,72 @@ def _encuadre(
     return centro, min(zoom - 0.35, 16.5)
 
 
-def _flechas_ruta(lats: list[float], lons: list[float]) -> tuple[list, list]:
+def _nodos_ruta(inst, ruta: Ruta) -> list[int]:
+    nodos: list[int] = []
+    secuencia = [inst.depot, *ruta.clientes, inst.depot]
+    for a, b in zip(secuencia, secuencia[1:]):
+        camino = inst.caminos.get((a, b))
+        if not camino:
+            continue
+        nodos.extend(camino if not nodos else camino[1:])
+    return nodos
+
+
+def _aristas_bidireccionales(inst, rutas: list[Ruta]) -> set[tuple[int, int]]:
+    aristas: set[tuple[int, int]] = set()
+    for ruta in rutas:
+        nodos = _nodos_ruta(inst, ruta)
+        aristas.update(zip(nodos, nodos[1:]))
+    return {(a, b) for a, b in aristas if (b, a) in aristas}
+
+
+def _geometria_ruta(
+    inst, ruta: Ruta, aristas_bidireccionales: set[tuple[int, int]]
+) -> tuple[list[float | None], list[float | None]]:
+    nodos = _nodos_ruta(inst, ruta)
+    lats: list[float | None] = []
+    lons: list[float | None] = []
+    anterior_doble: bool | None = None
+    desplazamiento_m = 5.0
+
+    for a, b in zip(nodos, nodos[1:]):
+        doble = (a, b) in aristas_bidireccionales
+        lat_a, lon_a = inst.coords(a)
+        lat_b, lon_b = inst.coords(b)
+        punto_a = (lat_a, lon_a)
+        punto_b = (lat_b, lon_b)
+
+        if doble:
+            lat_media = (lat_a + lat_b) / 2
+            escala_lon = 111_320 * math.cos(math.radians(lat_media))
+            este = (lon_b - lon_a) * escala_lon
+            norte = (lat_b - lat_a) * 111_320
+            longitud = math.hypot(este, norte)
+            if longitud > 1e-6:
+                offset_este = -norte / longitud * desplazamiento_m
+                offset_norte = este / longitud * desplazamiento_m
+                punto_a = (
+                    lat_a + offset_norte / 111_320,
+                    lon_a + offset_este / escala_lon,
+                )
+                punto_b = (
+                    lat_b + offset_norte / 111_320,
+                    lon_b + offset_este / escala_lon,
+                )
+
+        if anterior_doble is not None and anterior_doble != doble:
+            lats.append(None)
+            lons.append(None)
+        lats.extend((punto_a[0], punto_b[0]))
+        lons.extend((punto_a[1], punto_b[1]))
+        anterior_doble = doble
+
+    return lats, lons
+
+
+def _flechas_ruta(
+    lats: list[float | None], lons: list[float | None]
+) -> tuple[list, list]:
     """Devuelve flechas sólidas pequeñas, espaciadas y agrupadas en una traza."""
     if len(lats) < 2:
         return [], []
@@ -238,6 +304,8 @@ def _flechas_ruta(lats: list[float], lons: list[float]) -> tuple[list, list]:
     for idx in range(len(lats) - 1):
         lat1, lon1 = lats[idx], lons[idx]
         lat2, lon2 = lats[idx + 1], lons[idx + 1]
+        if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+            continue
         escala_lon = 111_320 * math.cos(math.radians((lat1 + lat2) / 2))
         este = (lon2 - lon1) * escala_lon
         norte = (lat2 - lat1) * 111_320
@@ -298,7 +366,9 @@ def _flechas_ruta(lats: list[float], lons: list[float]) -> tuple[list, list]:
 
 def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
     color = COLORES[i % len(COLORES)]
-    lats, lons = inst.polyline([inst.depot, *ruta.clientes, inst.depot])
+    lats, lons = _geometria_ruta(
+        inst, ruta, _aristas_bidireccionales(inst, [ruta])
+    )
     flecha_lats, flecha_lons = _flechas_ruta(lats, lons)
     numero = {c: k + 1 for k, c in enumerate(inst.clientes)}
     plat = [inst.coords(c)[0] for c in ruta.clientes]
@@ -341,7 +411,12 @@ def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
             ),
         ]
     )
-    centro, zoom = _encuadre(lats + [dlat], lons + [dlon], 480, 360)
+    centro, zoom = _encuadre(
+        [lat for lat in lats if lat is not None] + [dlat],
+        [lon for lon in lons if lon is not None] + [dlon],
+        480,
+        360,
+    )
     fig.update_layout(
         margin={"l": 0, "r": 0, "t": 0, "b": 0},
         showlegend=False,
@@ -354,10 +429,10 @@ def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
 
 def construir_mapa(inst, sol: Solucion) -> go.Figure:
     fig = go.Figure()
+    aristas_bidireccionales = _aristas_bidireccionales(inst, sol.rutas)
 
     for i, ruta in enumerate(sol.rutas):
-        seq = [inst.depot, *ruta.clientes, inst.depot]
-        lats, lons = inst.polyline(seq)
+        lats, lons = _geometria_ruta(inst, ruta, aristas_bidireccionales)
         color = COLORES[i % len(COLORES)]
         fig.add_trace(
             go.Scattermap(
@@ -837,4 +912,8 @@ def chat(_enviar, _enter, _limpiar, pregunta, historial, *valores):
 
 
 if __name__ == "__main__":
-    app.run(debug=False, host="127.0.0.1", port=8051)
+    app.run(
+        debug=False,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8051)),
+    )
