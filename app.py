@@ -254,40 +254,73 @@ def _geometria_ruta(
     nodos = _nodos_ruta(inst, ruta)
     lats: list[float | None] = []
     lons: list[float | None] = []
-    anterior_doble: bool | None = None
-    desplazamiento_m = 2.5
+    if len(nodos) < 2:
+        return lats, lons
 
-    for a, b in zip(nodos, nodos[1:]):
-        doble = (a, b) in aristas_bidireccionales
-        lat_a, lon_a = inst.coords(a)
-        lat_b, lon_b = inst.coords(b)
-        punto_a = (lat_a, lon_a)
-        punto_b = (lat_b, lon_b)
+    estados = [
+        (a, b) in aristas_bidireccionales for a, b in zip(nodos, nodos[1:])
+    ]
+    desplazamiento_m = 1.5
+    inicio = 0
 
+    while inicio < len(estados):
+        doble = estados[inicio]
+        fin = inicio + 1
+        while fin < len(estados) and estados[fin] == doble:
+            fin += 1
+
+        tramo = nodos[inicio : fin + 1]
+        puntos = [inst.coords(nodo) for nodo in tramo]
         if doble:
-            lat_media = (lat_a + lat_b) / 2
-            escala_lon = 111_320 * math.cos(math.radians(lat_media))
-            este = (lon_b - lon_a) * escala_lon
-            norte = (lat_b - lat_a) * 111_320
-            longitud = math.hypot(este, norte)
-            if longitud > 1e-6:
-                offset_este = -norte / longitud * desplazamiento_m
-                offset_norte = este / longitud * desplazamiento_m
-                punto_a = (
-                    lat_a + offset_norte / 111_320,
-                    lon_a + offset_este / escala_lon,
+            normales: list[tuple[float, float]] = []
+            for (lat_a, lon_a), (lat_b, lon_b) in zip(puntos, puntos[1:]):
+                escala_lon = 111_320 * math.cos(
+                    math.radians((lat_a + lat_b) / 2)
                 )
-                punto_b = (
-                    lat_b + offset_norte / 111_320,
-                    lon_b + offset_este / escala_lon,
+                este = (lon_b - lon_a) * escala_lon
+                norte = (lat_b - lat_a) * 111_320
+                longitud = math.hypot(este, norte)
+                normales.append(
+                    (-norte / longitud, este / longitud)
+                    if longitud > 1e-6
+                    else (0.0, 0.0)
                 )
 
-        if anterior_doble is not None and anterior_doble != doble:
+            desplazados: list[tuple[float, float]] = []
+            for indice, (lat, lon) in enumerate(puntos):
+                if indice == 0:
+                    mx, my = normales[0]
+                elif indice == len(puntos) - 1:
+                    mx, my = normales[-1]
+                else:
+                    nx1, ny1 = normales[indice - 1]
+                    nx2, ny2 = normales[indice]
+                    denominador = 1 + nx1 * nx2 + ny1 * ny2
+                    if denominador > 0.25:
+                        mx = (nx1 + nx2) / denominador
+                        my = (ny1 + ny2) / denominador
+                    else:
+                        mx, my = nx2, ny2
+                    longitud_miter = math.hypot(mx, my)
+                    if longitud_miter > 2.5:
+                        mx *= 2.5 / longitud_miter
+                        my *= 2.5 / longitud_miter
+
+                escala_lon = 111_320 * math.cos(math.radians(lat))
+                desplazados.append(
+                    (
+                        lat + my * desplazamiento_m / 111_320,
+                        lon + mx * desplazamiento_m / escala_lon,
+                    )
+                )
+            puntos = desplazados
+
+        if lats:
             lats.append(None)
             lons.append(None)
-        lats.extend((punto_a[0], punto_b[0]))
-        lons.extend((punto_a[1], punto_b[1]))
-        anterior_doble = doble
+        lats.extend(lat for lat, _ in puntos)
+        lons.extend(lon for _, lon in puntos)
+        inicio = fin
 
     return lats, lons
 
