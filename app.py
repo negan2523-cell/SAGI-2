@@ -240,23 +240,15 @@ def _nodos_ruta(inst, ruta: Ruta) -> list[int]:
     return nodos
 
 
-def _aristas_bidireccionales(inst, rutas: list[Ruta]) -> set[tuple[int, int]]:
-    aristas: set[tuple[int, int]] = set()
-    for ruta in rutas:
-        nodos = _nodos_ruta(inst, ruta)
-        aristas.update(zip(nodos, nodos[1:]))
-    return {(a, b) for a, b in aristas if (b, a) in aristas}
-
-
 def _geometria_ruta(
-    inst, ruta: Ruta, aristas_bidireccionales: set[tuple[int, int]]
+    inst, ruta: Ruta
 ) -> tuple[
     tuple[list[float | None], list[float | None]],
     tuple[list[float | None], list[float | None]],
 ]:
     nodos = _nodos_ruta(inst, ruta)
     if len(nodos) < 3:
-        return _geometria_nodos(inst, nodos, aristas_bidireccionales), ([], [])
+        return _geometria_nodos(inst, nodos), ([], [])
 
     lat_depot, lon_depot = inst.coords(nodos[0])
     escala_lon = 111_320 * math.cos(math.radians(lat_depot))
@@ -271,33 +263,35 @@ def _geometria_ruta(
             ),
         ),
     )
-    ida = _geometria_nodos(
-        inst, nodos[: punto_giro + 1], aristas_bidireccionales
-    )
-    vuelta = _geometria_nodos(
-        inst, nodos[punto_giro:], aristas_bidireccionales
-    )
+    ida = _geometria_nodos(inst, nodos[: punto_giro + 1])
+    vuelta = _geometria_nodos(inst, nodos[punto_giro:])
     return ida, vuelta
 
 
-def _geometria_nodos(
-    inst,
-    nodos: list[int],
-    aristas_bidireccionales: set[tuple[int, int]],
-) -> tuple[list[float | None], list[float | None]]:
+def _geometria_nodos(inst, nodos: list[int]) -> tuple[list[float | None], list[float | None]]:
     lats: list[float | None] = []
     lons: list[float | None] = []
     if len(nodos) < 2:
         return lats, lons
 
-    geometrias = []
+    tramo: list[tuple[float, float]] = []
     for a, b in zip(nodos, nodos[1:]):
         arista = inst.grafo.get_edge_data(a, b)
-        geometry = arista.get("geometry") if arista else None
+        geometries = []
+        if arista:
+            geometry = arista.get("geometry")
+            if geometry is not None:
+                geometries.append(geometry)
+            else:
+                geometries.extend(
+                    datos_arista["geometry"]
+                    for datos_arista in arista.values()
+                    if isinstance(datos_arista, dict)
+                    and datos_arista.get("geometry") is not None
+                )
 
-        if geometry is None:
-            pts = [inst.coords(a), inst.coords(b)]
-        else:
+        pts_candidatos = []
+        for geometry in geometries:
             if isinstance(geometry, dict):
                 coordenadas = geometry["coordinates"]
             elif hasattr(geometry, "coords"):
@@ -305,92 +299,34 @@ def _geometria_nodos(
             else:
                 coordenadas = geometry
             pts = [(float(lat), float(lon)) for lon, lat in coordenadas]
-            if len(pts) < 2:
-                pts = [inst.coords(a), inst.coords(b)]
-        geometrias.append(pts)
+            if len(pts) >= 2:
+                longitud = sum(
+                    math.dist(p1, p2) for p1, p2 in zip(pts, pts[1:])
+                )
+                pts_candidatos.append((longitud, pts))
 
-    estados = [
-        (a, b) in aristas_bidireccionales for a, b in zip(nodos, nodos[1:])
-    ]
-    desplazamiento_m = 1.5
-    inicio = 0
+        pts = (
+            min(pts_candidatos, key=lambda candidato: candidato[0])[1]
+            if pts_candidatos
+            else [inst.coords(a), inst.coords(b)]
+        )
+        origen = inst.coords(a)
+        if math.dist(pts[-1], origen) < math.dist(pts[0], origen):
+            pts = pts[::-1]
 
-    while inicio < len(estados):
-        doble = estados[inicio]
-        fin = inicio + 1
-        while fin < len(estados) and estados[fin] == doble:
-            fin += 1
-
-        tramo: list[tuple[float, float]] = []
-        for pts in geometrias[inicio:fin]:
-            if not tramo:
-                origen = inst.coords(nodos[inicio])
-                if math.dist(pts[-1], origen) < math.dist(pts[0], origen):
-                    pts = pts[::-1]
-                tramo.extend(pts)
+        if tramo:
+            ultimo_punto = tramo[-1]
+            if math.dist(ultimo_punto, pts[-1]) < math.dist(ultimo_punto, pts[0]):
+                pts = pts[::-1]
+            if math.dist(tramo[-1], pts[0]) < 1e-5:
+                tramo.extend(pts[1:])
             else:
-                ultimo_punto = tramo[-1]
-                dist_inicio = math.dist(ultimo_punto, pts[0])
-                dist_fin = math.dist(ultimo_punto, pts[-1])
+                tramo.extend(pts)
+        else:
+            tramo.extend(pts)
 
-                if dist_fin < dist_inicio:
-                    pts = pts[::-1]
-
-                if math.dist(tramo[-1], pts[0]) < 1e-5:
-                    tramo.extend(pts[1:])
-                else:
-                    tramo.extend(pts)
-        puntos = tramo
-        if doble and len(puntos) > 1:
-            normales: list[tuple[float, float]] = []
-            for (lat_a, lon_a), (lat_b, lon_b) in zip(puntos, puntos[1:]):
-                escala_lon = 111_320 * math.cos(
-                    math.radians((lat_a + lat_b) / 2)
-                )
-                este = (lon_b - lon_a) * escala_lon
-                norte = (lat_b - lat_a) * 111_320
-                longitud = math.hypot(este, norte)
-                normales.append(
-                    (-norte / longitud, este / longitud)
-                    if longitud > 1e-6
-                    else (0.0, 0.0)
-                )
-
-            desplazados: list[tuple[float, float]] = []
-            for indice, (lat, lon) in enumerate(puntos):
-                if indice == 0:
-                    mx, my = normales[0]
-                elif indice == len(puntos) - 1:
-                    mx, my = normales[-1]
-                else:
-                    nx1, ny1 = normales[indice - 1]
-                    nx2, ny2 = normales[indice]
-                    denominador = 1 + nx1 * nx2 + ny1 * ny2
-                    if denominador > 0.25:
-                        mx = (nx1 + nx2) / denominador
-                        my = (ny1 + ny2) / denominador
-                    else:
-                        mx, my = nx2, ny2
-                    longitud_miter = math.hypot(mx, my)
-                    if longitud_miter > 2.5:
-                        mx *= 2.5 / longitud_miter
-                        my *= 2.5 / longitud_miter
-
-                escala_lon = 111_320 * math.cos(math.radians(lat))
-                desplazados.append(
-                    (
-                        lat + my * desplazamiento_m / 111_320,
-                        lon + mx * desplazamiento_m / escala_lon,
-                    )
-                )
-            puntos = desplazados
-
-        if lats and puntos and lats[-1] is not None and lons[-1] is not None:
-            if math.dist((lats[-1], lons[-1]), puntos[0]) < 1e-5:
-                puntos = puntos[1:]
-        lats.extend(lat for lat, _ in puntos)
-        lons.extend(lon for _, lon in puntos)
-        inicio = fin
+    lats.extend(lat for lat, _ in tramo)
+    lons.extend(lon for _, lon in tramo)
 
     return lats, lons
 
@@ -467,11 +403,11 @@ def _flechas_ruta(
     return flecha_lats, flecha_lons
 
 
-def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
+def construir_mapa_conductor(
+    inst, i: int, ruta: Ruta, filtro_trayecto: str = "ambos"
+) -> go.Figure:
     color = COLORES[i % len(COLORES)]
-    (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(
-        inst, ruta, _aristas_bidireccionales(inst, [ruta])
-    )
+    (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(inst, ruta)
     ida_flecha_lats, ida_flecha_lons = _flechas_ruta(ida_lats, ida_lons)
     vuelta_flecha_lats, vuelta_flecha_lons = _flechas_ruta(
         vuelta_lats, vuelta_lons
@@ -480,43 +416,52 @@ def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
     plat = [inst.coords(c)[0] for c in ruta.clientes]
     plon = [inst.coords(c)[1] for c in ruta.clientes]
     dlat, dlon = inst.coords(inst.depot)
-    trazas_ruta = [
-        go.Scattermap(
-            lat=ida_lats,
-            lon=ida_lons,
-            mode="lines",
-            line={"width": 4, "color": color},
-            name="Ida",
-            hoverinfo="skip",
-        ),
-        go.Scattermap(
-            lat=vuelta_lats,
-            lon=vuelta_lons,
-            mode="lines",
-            line={"width": 4, "color": color},
-            opacity=0.65,
-            name="Vuelta",
-            hoverinfo="skip",
-        ),
-        go.Scattermap(
-            lat=ida_flecha_lats,
-            lon=ida_flecha_lons,
-            mode="lines",
-            fill="toself",
-            fillcolor="white",
-            line={"width": 1, "color": "#174d3e"},
-            hoverinfo="skip",
-        ),
-        go.Scattermap(
-            lat=vuelta_flecha_lats,
-            lon=vuelta_flecha_lons,
-            mode="lines",
-            fill="toself",
-            fillcolor="white",
-            line={"width": 1, "color": "#174d3e"},
-            hoverinfo="skip",
-        ),
-    ]
+    trazas_ruta = []
+    if filtro_trayecto in {"ida", "ambos"}:
+        trazas_ruta.extend(
+            [
+                go.Scattermap(
+                    lat=ida_lats,
+                    lon=ida_lons,
+                    mode="lines",
+                    line={"width": 4, "color": color},
+                    name="Ida",
+                    hoverinfo="skip",
+                ),
+                go.Scattermap(
+                    lat=ida_flecha_lats,
+                    lon=ida_flecha_lons,
+                    mode="lines",
+                    fill="toself",
+                    fillcolor="white",
+                    line={"width": 1, "color": "#174d3e"},
+                    hoverinfo="skip",
+                ),
+            ]
+        )
+    if filtro_trayecto in {"vuelta", "ambos"}:
+        trazas_ruta.extend(
+            [
+                go.Scattermap(
+                    lat=vuelta_lats,
+                    lon=vuelta_lons,
+                    mode="lines",
+                    line={"width": 4, "color": color},
+                    opacity=0.65,
+                    name="Vuelta",
+                    hoverinfo="skip",
+                ),
+                go.Scattermap(
+                    lat=vuelta_flecha_lats,
+                    lon=vuelta_flecha_lons,
+                    mode="lines",
+                    fill="toself",
+                    fillcolor="white",
+                    line={"width": 1, "color": "#174d3e"},
+                    hoverinfo="skip",
+                ),
+            ]
+        )
     fig = go.Figure(
         [
             *trazas_ruta,
@@ -567,17 +512,16 @@ def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
     return fig
 
 
-def construir_mapa(inst, sol: Solucion) -> go.Figure:
+def construir_mapa(
+    inst, sol: Solucion, filtro_trayecto: str = "ambos"
+) -> go.Figure:
     fig = go.Figure()
-    aristas_bidireccionales = _aristas_bidireccionales(inst, sol.rutas)
 
     for i, ruta in enumerate(sol.rutas):
-        (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(
-            inst, ruta, aristas_bidireccionales
-        )
+        (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(inst, ruta)
         color = COLORES[i % len(COLORES)]
-        fig.add_traces(
-            [
+        if filtro_trayecto in {"ida", "ambos"}:
+            fig.add_trace(
                 go.Scattermap(
                     lat=ida_lats,
                     lon=ida_lons,
@@ -585,7 +529,10 @@ def construir_mapa(inst, sol: Solucion) -> go.Figure:
                     line=dict(width=3.2, color=color),
                     name=f"Ruta {i + 1} · ida",
                     hoverinfo="name",
-                ),
+                )
+            )
+        if filtro_trayecto in {"vuelta", "ambos"}:
+            fig.add_trace(
                 go.Scattermap(
                     lat=vuelta_lats,
                     lon=vuelta_lons,
@@ -594,9 +541,8 @@ def construir_mapa(inst, sol: Solucion) -> go.Figure:
                     opacity=0.65,
                     name=f"Ruta {i + 1} · vuelta",
                     hoverinfo="name",
-                ),
-            ]
-        )
+                )
+            )
 
     clat = [inst.coords(c)[0] for c in inst.clientes]
     clon = [inst.coords(c)[1] for c in inst.clientes]
@@ -723,6 +669,17 @@ app.layout = html.Div(
                     className="panel",
                     children=[
                         html.H2("Escenario hipotético"),
+                        html.Label("Trayecto visible"),
+                        dcc.RadioItems(
+                            id="filtro-trayecto",
+                            options=[
+                                {"label": "Recolección / Ida", "value": "ida"},
+                                {"label": "Regreso al patio", "value": "vuelta"},
+                                {"label": "Ambos", "value": "ambos"},
+                            ],
+                            value="ambos",
+                            inline=True,
+                        ),
                         html.Label("Capacidad del vehículo (kg)"),
                         dcc.Slider(
                             id="capacidad",
@@ -921,9 +878,10 @@ def resolver(
 @app.callback(
     Output({"type": "mapa-conductor", "index": MATCH}, "children"),
     Input({"type": "conductor", "index": MATCH}, "open"),
+    Input("filtro-trayecto", "value"),
     *[State(s, "value") for s in SLIDERS],
 )
-def mapa_conductor(abierto, *valores):
+def mapa_conductor(abierto, filtro_trayecto, *valores):
     # Solo se monta el mapa del panel abierto: cada mapa es un contexto WebGL.
     if not abierto:
         return None
@@ -932,7 +890,9 @@ def mapa_conductor(abierto, *valores):
     if i >= len(sol.rutas):
         return None
     return dcc.Graph(
-        figure=construir_mapa_conductor(INSTANCIA, i, sol.rutas[i]),
+        figure=construir_mapa_conductor(
+            INSTANCIA, i, sol.rutas[i], filtro_trayecto
+        ),
         config={"displayModeBar": False, "scrollZoom": True},
         responsive=True,
         style={"height": "360px"},
@@ -953,6 +913,7 @@ def mapa_conductor(abierto, *valores):
     Input("costo", "value"),
     Input("costo_fijo", "value"),
     Input("penalizacion", "value"),
+    Input("filtro-trayecto", "value"),
     State({"type": "conductor", "index": ALL}, "open"),
     State({"type": "conductor", "index": ALL}, "id"),
 )
@@ -966,6 +927,7 @@ def actualizar(
     costo,
     costo_fijo,
     penalizacion,
+    filtro_trayecto,
     paneles_abiertos,
     paneles_ids,
 ):
@@ -1023,7 +985,12 @@ def actualizar(
         costo_km=float(costo),
         costo_fijo=float(costo_fijo),
     )
-    return construir_mapa(INSTANCIA, sol), kpis, estado, conductores
+    return (
+        construir_mapa(INSTANCIA, sol, filtro_trayecto),
+        kpis,
+        estado,
+        conductores,
+    )
 
 
 
