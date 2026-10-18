@@ -272,8 +272,41 @@ def _geometria_arista(inst, a: int, b: int) -> list[tuple[float, float]]:
 
 def _geometria_ruta(
     inst, ruta: Ruta, aristas_bidireccionales: set[tuple[int, int]]
-) -> tuple[list[float | None], list[float | None]]:
+) -> tuple[
+    tuple[list[float | None], list[float | None]],
+    tuple[list[float | None], list[float | None]],
+]:
     nodos = _nodos_ruta(inst, ruta)
+    if len(nodos) < 3:
+        return _geometria_nodos(inst, nodos, aristas_bidireccionales), ([], [])
+
+    lat_depot, lon_depot = inst.coords(nodos[0])
+    escala_lon = 111_320 * math.cos(math.radians(lat_depot))
+    punto_depot_m = (lat_depot * 111_320, lon_depot * escala_lon)
+    punto_giro = max(
+        range(1, len(nodos) - 1),
+        key=lambda indice: math.dist(
+            punto_depot_m,
+            (
+                inst.coords(nodos[indice])[0] * 111_320,
+                inst.coords(nodos[indice])[1] * escala_lon,
+            ),
+        ),
+    )
+    ida = _geometria_nodos(
+        inst, nodos[: punto_giro + 1], aristas_bidireccionales
+    )
+    vuelta = _geometria_nodos(
+        inst, nodos[punto_giro:], aristas_bidireccionales
+    )
+    return ida, vuelta
+
+
+def _geometria_nodos(
+    inst,
+    nodos: list[int],
+    aristas_bidireccionales: set[tuple[int, int]],
+) -> tuple[list[float | None], list[float | None]]:
     lats: list[float | None] = []
     lons: list[float | None] = []
     if len(nodos) < 2:
@@ -433,32 +466,57 @@ def _flechas_ruta(
 
 def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
     color = COLORES[i % len(COLORES)]
-    lats, lons = _geometria_ruta(
+    (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(
         inst, ruta, _aristas_bidireccionales(inst, [ruta])
     )
-    flecha_lats, flecha_lons = _flechas_ruta(lats, lons)
+    ida_flecha_lats, ida_flecha_lons = _flechas_ruta(ida_lats, ida_lons)
+    vuelta_flecha_lats, vuelta_flecha_lons = _flechas_ruta(
+        vuelta_lats, vuelta_lons
+    )
     numero = {c: k + 1 for k, c in enumerate(inst.clientes)}
     plat = [inst.coords(c)[0] for c in ruta.clientes]
     plon = [inst.coords(c)[1] for c in ruta.clientes]
     dlat, dlon = inst.coords(inst.depot)
+    trazas_ruta = [
+        go.Scattermap(
+            lat=ida_lats,
+            lon=ida_lons,
+            mode="lines",
+            line={"width": 4, "color": color},
+            name="Ida",
+            hoverinfo="skip",
+        ),
+        go.Scattermap(
+            lat=vuelta_lats,
+            lon=vuelta_lons,
+            mode="lines",
+            line={"width": 4, "color": color},
+            opacity=0.65,
+            name="Vuelta",
+            hoverinfo="skip",
+        ),
+        go.Scattermap(
+            lat=ida_flecha_lats,
+            lon=ida_flecha_lons,
+            mode="lines",
+            fill="toself",
+            fillcolor="white",
+            line={"width": 1, "color": "#174d3e"},
+            hoverinfo="skip",
+        ),
+        go.Scattermap(
+            lat=vuelta_flecha_lats,
+            lon=vuelta_flecha_lons,
+            mode="lines",
+            fill="toself",
+            fillcolor="white",
+            line={"width": 1, "color": "#174d3e"},
+            hoverinfo="skip",
+        ),
+    ]
     fig = go.Figure(
         [
-            go.Scattermap(
-                lat=lats,
-                lon=lons,
-                mode="lines",
-                line={"width": 4, "color": color},
-                hoverinfo="skip",
-            ),
-            go.Scattermap(
-                lat=flecha_lats,
-                lon=flecha_lons,
-                mode="lines",
-                fill="toself",
-                fillcolor="white",
-                line={"width": 1, "color": "#174d3e"},
-                hoverinfo="skip",
-            ),
+            *trazas_ruta,
             go.Scattermap(
                 lat=plat,
                 lon=plon,
@@ -479,8 +537,20 @@ def construir_mapa_conductor(inst, i: int, ruta: Ruta) -> go.Figure:
         ]
     )
     centro, zoom = _encuadre(
-        [lat for lat in lats if lat is not None] + [dlat],
-        [lon for lon in lons if lon is not None] + [dlon],
+        [
+            lat
+            for trayecto_lats in (ida_lats, vuelta_lats)
+            for lat in trayecto_lats
+            if lat is not None
+        ]
+        + [dlat],
+        [
+            lon
+            for trayecto_lons in (ida_lons, vuelta_lons)
+            for lon in trayecto_lons
+            if lon is not None
+        ]
+        + [dlon],
         480,
         360,
     )
@@ -499,17 +569,30 @@ def construir_mapa(inst, sol: Solucion) -> go.Figure:
     aristas_bidireccionales = _aristas_bidireccionales(inst, sol.rutas)
 
     for i, ruta in enumerate(sol.rutas):
-        lats, lons = _geometria_ruta(inst, ruta, aristas_bidireccionales)
+        (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(
+            inst, ruta, aristas_bidireccionales
+        )
         color = COLORES[i % len(COLORES)]
-        fig.add_trace(
-            go.Scattermap(
-                lat=lats,
-                lon=lons,
-                mode="lines",
-                line=dict(width=3.2, color=color),
-                name=f"Ruta {i + 1} · {ruta.carga_kg:.0f} kg",
-                hoverinfo="name",
-            )
+        fig.add_traces(
+            [
+                go.Scattermap(
+                    lat=ida_lats,
+                    lon=ida_lons,
+                    mode="lines",
+                    line=dict(width=3.2, color=color),
+                    name=f"Ruta {i + 1} · ida",
+                    hoverinfo="name",
+                ),
+                go.Scattermap(
+                    lat=vuelta_lats,
+                    lon=vuelta_lons,
+                    mode="lines",
+                    line=dict(width=3.2, color=color),
+                    opacity=0.65,
+                    name=f"Ruta {i + 1} · vuelta",
+                    hoverinfo="name",
+                ),
+            ]
         )
 
     clat = [inst.coords(c)[0] for c in inst.clientes]
