@@ -41,6 +41,8 @@ FICHA_TECNICA = """FICHA TÉCNICA DEL SIMULADOR
   peso = longitud en metros (haversine). Respeta calles de un solo sentido (oneway), glorietas
   y autopistas. Se conserva la mayor componente fuertemente conexa (desde cualquier nodo se
   puede llegar a cualquier otro respetando los sentidos).
+- Cada arista conserva su geometría OSM y el mapa dibuja sus coordenadas, incluidos los
+  vértices intermedios de los LineStrings, en lugar de unir solo las paradas.
 - Instancia: patio y 28 puntos de acumulación sintéticos (semilla fija), ubicados sobre nodos
   del grafo. Entre cada par de puntos se calcula el camino más corto por calles con Dijkstra
   (nx.shortest_path, peso = longitud). Las distancias son por calle, no en línea recta, y

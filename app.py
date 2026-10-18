@@ -248,6 +248,28 @@ def _aristas_bidireccionales(inst, rutas: list[Ruta]) -> set[tuple[int, int]]:
     return {(a, b) for a, b in aristas if (b, a) in aristas}
 
 
+def _geometria_arista(inst, a: int, b: int) -> list[tuple[float, float]]:
+    arista = inst.grafo.get_edge_data(a, b)
+    geometry = arista.get("geometry") if arista else None
+    if geometry is None:
+        return [inst.coords(a), inst.coords(b)]
+
+    if isinstance(geometry, dict):
+        coordenadas = geometry["coordinates"]
+    elif hasattr(geometry, "coords"):
+        coordenadas = geometry.coords
+    else:
+        coordenadas = geometry
+    puntos = [(float(lat), float(lon)) for lon, lat in coordenadas]
+    if len(puntos) < 2:
+        return [inst.coords(a), inst.coords(b)]
+
+    origen = inst.coords(a)
+    if math.dist(puntos[-1], origen) < math.dist(puntos[0], origen):
+        puntos = puntos[::-1]
+    return puntos
+
+
 def _geometria_ruta(
     inst, ruta: Ruta, aristas_bidireccionales: set[tuple[int, int]]
 ) -> tuple[list[float | None], list[float | None]]:
@@ -256,6 +278,10 @@ def _geometria_ruta(
     lons: list[float | None] = []
     if len(nodos) < 2:
         return lats, lons
+
+    geometrias = [
+        _geometria_arista(inst, a, b) for a, b in zip(nodos, nodos[1:])
+    ]
 
     estados = [
         (a, b) in aristas_bidireccionales for a, b in zip(nodos, nodos[1:])
@@ -269,8 +295,13 @@ def _geometria_ruta(
         while fin < len(estados) and estados[fin] == doble:
             fin += 1
 
-        tramo = nodos[inicio : fin + 1]
-        puntos = [inst.coords(nodo) for nodo in tramo]
+        tramo: list[tuple[float, float]] = []
+        for geometria_arista in geometrias[inicio:fin]:
+            if tramo and geometria_arista[0] == tramo[-1]:
+                tramo.extend(geometria_arista[1:])
+            else:
+                tramo.extend(geometria_arista)
+        puntos = tramo
         if doble:
             normales: list[tuple[float, float]] = []
             for (lat_a, lon_a), (lat_b, lon_b) in zip(puntos, puntos[1:]):
@@ -315,9 +346,12 @@ def _geometria_ruta(
                 )
             puntos = desplazados
 
-        if lats:
-            lats.append(None)
-            lons.append(None)
+        if (
+            lats
+            and puntos
+            and (lats[-1], lons[-1]) == puntos[0]
+        ):
+            puntos = puntos[1:]
         lats.extend(lat for lat, _ in puntos)
         lons.extend(lon for _, lon in puntos)
         inicio = fin

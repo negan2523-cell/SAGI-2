@@ -191,7 +191,14 @@ def construir_grafo(osm: dict[str, Any]) -> nx.DiGraph:
             if G.has_edge(a, b):
                 G[a][b]["length"] = min(G[a][b]["length"], dist)
             else:
-                G.add_edge(a, b, length=dist, name=nombre, highway=highway)
+                G.add_edge(
+                    a,
+                    b,
+                    length=dist,
+                    name=nombre,
+                    highway=highway,
+                    geometry=[(loa, la), (lob, lb)],
+                )
 
     G.remove_nodes_from([n for n, d in G.degree() if d == 0])
     if G.number_of_nodes() == 0:
@@ -313,7 +320,14 @@ def _instancia_a_dict(inst: InstanciaSuba) -> dict[str, Any]:
         "formato": _FORMATO_CACHE,
         "nodos": [[n, d["lat"], d["lon"]] for n, d in G.nodes(data=True)],
         "aristas": [
-            [a, b, d["length"], d.get("name", ""), d.get("highway", "")]
+            [
+                a,
+                b,
+                d["length"],
+                d.get("name", ""),
+                d.get("highway", ""),
+                d.get("geometry"),
+            ]
             for a, b, d in G.edges(data=True)
         ],
         "depot": inst.depot,
@@ -330,8 +344,22 @@ def _instancia_desde_dict(data: dict[str, Any]) -> InstanciaSuba:
     G = nx.DiGraph()
     for n, lat, lon in data["nodos"]:
         G.add_node(n, lat=lat, lon=lon)
-    for a, b, length, name, highway in data["aristas"]:
-        G.add_edge(a, b, length=length, name=name, highway=highway)
+    for arista in data["aristas"]:
+        a, b, length, name, highway, *geometria = arista
+        geometry = geometria[0] if geometria else None
+        if geometry is None:
+            geometry = [
+                (G.nodes[a]["lon"], G.nodes[a]["lat"]),
+                (G.nodes[b]["lon"], G.nodes[b]["lat"]),
+            ]
+        G.add_edge(
+            a,
+            b,
+            length=length,
+            name=name,
+            highway=highway,
+            geometry=geometry,
+        )
     return InstanciaSuba(
         grafo=G,
         depot=data["depot"],
