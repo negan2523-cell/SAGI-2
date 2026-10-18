@@ -248,28 +248,6 @@ def _aristas_bidireccionales(inst, rutas: list[Ruta]) -> set[tuple[int, int]]:
     return {(a, b) for a, b in aristas if (b, a) in aristas}
 
 
-def _geometria_arista(inst, a: int, b: int) -> list[tuple[float, float]]:
-    arista = inst.grafo.get_edge_data(a, b)
-    geometry = arista.get("geometry") if arista else None
-    if geometry is None:
-        return [inst.coords(a), inst.coords(b)]
-
-    if isinstance(geometry, dict):
-        coordenadas = geometry["coordinates"]
-    elif hasattr(geometry, "coords"):
-        coordenadas = geometry.coords
-    else:
-        coordenadas = geometry
-    puntos = [(float(lat), float(lon)) for lon, lat in coordenadas]
-    if len(puntos) < 2:
-        return [inst.coords(a), inst.coords(b)]
-
-    origen = inst.coords(a)
-    if math.dist(puntos[-1], origen) < math.dist(puntos[0], origen):
-        puntos = puntos[::-1]
-    return puntos
-
-
 def _geometria_ruta(
     inst, ruta: Ruta, aristas_bidireccionales: set[tuple[int, int]]
 ) -> tuple[
@@ -312,9 +290,24 @@ def _geometria_nodos(
     if len(nodos) < 2:
         return lats, lons
 
-    geometrias = [
-        _geometria_arista(inst, a, b) for a, b in zip(nodos, nodos[1:])
-    ]
+    geometrias = []
+    for a, b in zip(nodos, nodos[1:]):
+        arista = inst.grafo.get_edge_data(a, b)
+        geometry = arista.get("geometry") if arista else None
+
+        if geometry is None:
+            pts = [inst.coords(a), inst.coords(b)]
+        else:
+            if isinstance(geometry, dict):
+                coordenadas = geometry["coordinates"]
+            elif hasattr(geometry, "coords"):
+                coordenadas = geometry.coords
+            else:
+                coordenadas = geometry
+            pts = [(float(lat), float(lon)) for lon, lat in coordenadas]
+            if len(pts) < 2:
+                pts = [inst.coords(a), inst.coords(b)]
+        geometrias.append(pts)
 
     estados = [
         (a, b) in aristas_bidireccionales for a, b in zip(nodos, nodos[1:])
@@ -329,13 +322,26 @@ def _geometria_nodos(
             fin += 1
 
         tramo: list[tuple[float, float]] = []
-        for geometria_arista in geometrias[inicio:fin]:
-            if tramo and geometria_arista[0] == tramo[-1]:
-                tramo.extend(geometria_arista[1:])
+        for pts in geometrias[inicio:fin]:
+            if not tramo:
+                origen = inst.coords(nodos[inicio])
+                if math.dist(pts[-1], origen) < math.dist(pts[0], origen):
+                    pts = pts[::-1]
+                tramo.extend(pts)
             else:
-                tramo.extend(geometria_arista)
+                ultimo_punto = tramo[-1]
+                dist_inicio = math.dist(ultimo_punto, pts[0])
+                dist_fin = math.dist(ultimo_punto, pts[-1])
+
+                if dist_fin < dist_inicio:
+                    pts = pts[::-1]
+
+                if math.dist(tramo[-1], pts[0]) < 1e-5:
+                    tramo.extend(pts[1:])
+                else:
+                    tramo.extend(pts)
         puntos = tramo
-        if doble:
+        if doble and len(puntos) > 1:
             normales: list[tuple[float, float]] = []
             for (lat_a, lon_a), (lat_b, lon_b) in zip(puntos, puntos[1:]):
                 escala_lon = 111_320 * math.cos(
@@ -379,12 +385,9 @@ def _geometria_nodos(
                 )
             puntos = desplazados
 
-        if (
-            lats
-            and puntos
-            and (lats[-1], lons[-1]) == puntos[0]
-        ):
-            puntos = puntos[1:]
+        if lats and puntos and lats[-1] is not None and lons[-1] is not None:
+            if math.dist((lats[-1], lons[-1]), puntos[0]) < 1e-5:
+                puntos = puntos[1:]
         lats.extend(lat for lat, _ in puntos)
         lons.extend(lon for _, lon in puntos)
         inicio = fin
