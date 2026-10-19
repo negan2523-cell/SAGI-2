@@ -100,8 +100,14 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     ox.settings.log_console = False
 
     try:
-        # Descarga de la red usando el formato de tupla compatible con versiones recientes
-# OSMnx 2.0+ exige una sola tupla como primer argumento
+# --- BLINDAJE DINÁMICO ANTI-BLOQUEO ---
+        # 1. Forzar el uso del servidor de Francia (totalmente independiente del alemán)
+        ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api"
+        # 2. Disfrazar el servidor de Render como un navegador web humano (Google Chrome)
+        ox.settings.requests_kwargs = {'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}}
+        ox.settings.timeout = 300
+        # -------------------------------------
+        
         G_multi = ox.graph_from_bbox(
             (bbox_north, bbox_south, bbox_east, bbox_west),
             network_type='drive'
