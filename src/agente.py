@@ -13,7 +13,7 @@ from functools import lru_cache
 import requests
 
 from src.config import HORA_INICIO_JORNADA, ROOT
-from src.graph.osm_network import InstanciaSuba
+from src.graph.osm_network import InstanciaVRP
 from src.routing.vrp import Solucion, itinerario
 
 BASE_URL_POR_DEFECTO = "https://openrouter.ai/api/v1"
@@ -106,7 +106,7 @@ def _hora(minutos_desde_salida: float) -> str:
     return f"{total // 60 % 24:02d}:{total % 60:02d}"
 
 
-def contexto_escenario(inst: InstanciaSuba, sol: Solucion, p: dict) -> str:
+def contexto_escenario(inst: InstanciaVRP, sol: Solucion, p: dict) -> str:
     numero = {c: k + 1 for k, c in enumerate(inst.clientes)}
     lineas = [
         f"Grafo vial cargado: {inst.grafo.number_of_nodes()} nodos, "
