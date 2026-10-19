@@ -1,20 +1,25 @@
-"""Simulador What-If de recolección de residuos — Suba, Bogotá."""
+"""Simulador What-If de recolección de residuos — Suba, Bogotá. (Arquitectura SaaS Multi-tenant)"""
 
 from __future__ import annotations
 
+import base64
+import io
+import json
 import math
 import os
 import sys
-from functools import lru_cache
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
+
+import pandas as pd
+import plotly.graph_objects as go
+from dash import ALL, MATCH, Input, Output, State, ctx, dcc, html, no_update
+from dash_extensions.enrich import DashProxy, ServersideOutputTransform, ServersideOutput, FileSystemStore
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-import plotly.graph_objects as go
-from dash import ALL, MATCH, Dash, Input, Output, State, ctx, dcc, html, no_update
 
 from src import agente
 from src.config import (
@@ -29,20 +34,16 @@ from src.graph.osm_network import cargar_instancia
 from src.routing.vrp import Ruta, Solucion, itinerario, resolver_vrp
 
 COLORES = [
-    "#0B6E4F",
-    "#E07A3D",
-    "#2C7FB8",
-    "#8C2F39",
-    "#6A4C93",
-    "#BC4B51",
-    "#3D5A80",
-    "#C9A227",
-    "#2A9D8F",
-    "#E76F51",
-    "#264653",
-    "#F4A261",
+    "#0B6E4F", "#E07A3D", "#2C7FB8", "#8C2F39", "#6A4C93",
+    "#BC4B51", "#3D5A80", "#C9A227", "#2A9D8F", "#E76F51",
+    "#264653", "#F4A261",
 ]
 
+# Configuración de almacenamiento para despliegues en la nube (Render usa /tmp efímero pero estable por instancia)
+fs_store = FileSystemStore(cache_dir="/tmp/dash_cache")
+
+app = DashProxy(__name__, transforms=[ServersideOutputTransform(backends=[fs_store])])
+app.title = "SAGI · Residuos Suba"
 
 def _kpi(titulo: str, valor: str, sub: str = "") -> html.Div:
     return html.Div(
@@ -54,15 +55,12 @@ def _kpi(titulo: str, valor: str, sub: str = "") -> html.Div:
         ],
     )
 
-
 def _fmt_cop(valor: float) -> str:
     return f"${valor:,.0f}".replace(",", ".")
-
 
 def _fmt_hora(minutos_desde_salida: float) -> str:
     total = round(HORA_INICIO_JORNADA * 60 + minutos_desde_salida)
     return f"{(total // 60) % 24:02d}:{total % 60:02d}"
-
 
 def _barra(titulo: str, valor: float, maximo: float, texto: str) -> html.Div:
     pct = 0.0 if maximo <= 0 else valor / maximo * 100
@@ -83,20 +81,8 @@ def _barra(titulo: str, valor: float, maximo: float, texto: str) -> html.Div:
         ],
     )
 
-
 def _panel_conductor(
-    inst,
-    i: int,
-    ruta: Ruta,
-    *,
-    abierto: bool,
-    capacidad,
-    jornada_h,
-    velocidad,
-    servicio,
-    demanda,
-    costo_km,
-    costo_fijo,
+    inst, i: int, ruta: Ruta, *, abierto: bool, capacidad, jornada_h, velocidad, servicio, demanda, costo_km, costo_fijo
 ) -> html.Details:
     color = COLORES[i % len(COLORES)]
     paradas, regreso_m, fin_min = itinerario(
@@ -152,29 +138,13 @@ def _panel_conductor(
                     html.Div(
                         className="conductor-metricas",
                         children=[
-                            _barra(
-                                "Carga",
-                                ruta.carga_kg,
-                                capacidad,
-                                f"{ruta.carga_kg:.0f} / {capacidad:.0f} kg",
-                            ),
-                            _barra(
-                                "Jornada",
-                                ruta.tiempo_min,
-                                jornada_h * 60,
-                                f"{ruta.tiempo_min / 60:.1f} / {jornada_h:g} h",
-                            ),
-                            html.P(
-                                [
-                                    html.Span("Costo de la ruta: "),
-                                    html.Strong(_fmt_cop(costo)),
-                                    html.Span(
-                                        f" (km {_fmt_cop(costo - costo_fijo)} + "
-                                        f"fijo {_fmt_cop(costo_fijo)})",
-                                        className="kpi-sub",
-                                    ),
-                                ]
-                            ),
+                            _barra("Carga", ruta.carga_kg, capacidad, f"{ruta.carga_kg:.0f} / {capacidad:.0f} kg"),
+                            _barra("Jornada", ruta.tiempo_min, jornada_h * 60, f"{ruta.tiempo_min / 60:.1f} / {jornada_h:g} h"),
+                            html.P([
+                                html.Span("Costo de la ruta: "),
+                                html.Strong(_fmt_cop(costo)),
+                                html.Span(f" (km {_fmt_cop(costo - costo_fijo)} + fijo {_fmt_cop(costo_fijo)})", className="kpi-sub"),
+                            ]),
                         ],
                     ),
                     html.Div(
@@ -202,17 +172,7 @@ def _panel_conductor(
                     html.Table(
                         className="itinerario",
                         children=[
-                            html.Thead(
-                                html.Tr(
-                                    [
-                                        html.Th("#"),
-                                        html.Th("Parada"),
-                                        html.Th("Llegada"),
-                                        html.Th("Tramo (km)"),
-                                        html.Th("Carga acum. (kg)"),
-                                    ]
-                                )
-                            ),
+                            html.Thead(html.Tr([html.Th("#"), html.Th("Parada"), html.Th("Llegada"), html.Th("Tramo (km)"), html.Th("Carga acum. (kg)")])),
                             html.Tbody(filas),
                         ],
                     ),
@@ -220,7 +180,6 @@ def _panel_conductor(
             ),
         ],
     )
-
 
 def construir_conductores(inst, sol: Solucion, abiertos: set[int], **params) -> list:
     hijos: list = [
@@ -230,15 +189,10 @@ def construir_conductores(inst, sol: Solucion, abiertos: set[int], **params) -> 
     if sol.no_cubiertos:
         numero = {c: k + 1 for k, c in enumerate(inst.clientes)}
         puntos = ", ".join(str(numero[c]) for c in sorted(sol.no_cubiertos, key=numero.get))
-        hijos.append(
-            html.P(f"Sin conductor asignado: puntos {puntos}.", className="warn")
-        )
+        hijos.append(html.P(f"Sin conductor asignado: puntos {puntos}.", className="warn"))
     return hijos
 
-
-def _encuadre(
-    lats: list[float], lons: list[float], ancho_px: float, alto_px: float
-) -> tuple[dict, float]:
+def _encuadre(lats: list[float], lons: list[float], ancho_px: float, alto_px: float) -> tuple[dict, float]:
     lat_min, lat_max, lon_min, lon_max = min(lats), max(lats), min(lons), max(lons)
     dlat = max(lat_max - lat_min, 1e-4)
     dlon = max(lon_max - lon_min, 1e-4)
@@ -246,28 +200,18 @@ def _encuadre(
     centro = {"lat": (lat_min + lat_max) / 2, "lon": (lon_min + lon_max) / 2}
     return centro, min(zoom - 0.35, 16.5)
 
-
 def _nodos_ruta(inst, ruta: Ruta) -> list[int]:
     nodos: list[int] = []
     secuencia = [inst.depot, *ruta.clientes, inst.depot]
     for a, b in zip(secuencia, secuencia[1:]):
         camino = inst.caminos.get((a, b))
-        if not camino:
-            continue
+        if not camino: continue
         nodos.extend(camino if not nodos else camino[1:])
     return nodos
 
-
-def _geometria_ruta(
-    inst, ruta: Ruta
-) -> tuple[
-    tuple[list[float | None], list[float | None]],
-    tuple[list[float | None], list[float | None]],
-]:
+def _geometria_ruta(inst, ruta: Ruta) -> tuple[tuple[list[float | None], list[float | None]], tuple[list[float | None], list[float | None]]]:
     nodos = _nodos_ruta(inst, ruta)
-    if len(nodos) < 3:
-        return _geometria_nodos(inst, nodos), ([], [])
-
+    if len(nodos) < 3: return _geometria_nodos(inst, nodos), ([], [])
     lat_depot, lon_depot = inst.coords(nodos[0])
     escala_lon = 111_320 * math.cos(math.radians(lat_depot))
     punto_depot_m = (lat_depot * 111_320, lon_depot * escala_lon)
@@ -275,23 +219,17 @@ def _geometria_ruta(
         range(1, len(nodos) - 1),
         key=lambda indice: math.dist(
             punto_depot_m,
-            (
-                inst.coords(nodos[indice])[0] * 111_320,
-                inst.coords(nodos[indice])[1] * escala_lon,
-            ),
+            (inst.coords(nodos[indice])[0] * 111_320, inst.coords(nodos[indice])[1] * escala_lon),
         ),
     )
     ida = _geometria_nodos(inst, nodos[: punto_giro + 1])
     vuelta = _geometria_nodos(inst, nodos[punto_giro:])
     return ida, vuelta
 
-
 def _geometria_nodos(inst, nodos: list[int]) -> tuple[list[float | None], list[float | None]]:
     lats: list[float | None] = []
     lons: list[float | None] = []
-    if len(nodos) < 2:
-        return lats, lons
-
+    if len(nodos) < 2: return lats, lons
     tramo: list[tuple[float, float]] = []
     for a, b in zip(nodos, nodos[1:]):
         arista = inst.grafo.get_edge_data(a, b)
@@ -302,93 +240,55 @@ def _geometria_nodos(inst, nodos: list[int]) -> tuple[list[float | None], list[f
                 geometries.append(geometry)
             else:
                 geometries.extend(
-                    datos_arista["geometry"]
-                    for datos_arista in arista.values()
-                    if isinstance(datos_arista, dict)
-                    and datos_arista.get("geometry") is not None
+                    datos_arista["geometry"] for datos_arista in arista.values()
+                    if isinstance(datos_arista, dict) and datos_arista.get("geometry") is not None
                 )
-
         pts_candidatos = []
         for geometry in geometries:
-            if isinstance(geometry, dict):
-                coordenadas = geometry["coordinates"]
-            elif hasattr(geometry, "coords"):
-                coordenadas = geometry.coords
-            else:
-                coordenadas = geometry
+            if isinstance(geometry, dict): coordenadas = geometry["coordinates"]
+            elif hasattr(geometry, "coords"): coordenadas = geometry.coords
+            else: coordenadas = geometry
             pts = [(float(lat), float(lon)) for lon, lat in coordenadas]
             if len(pts) >= 2:
-                longitud = sum(
-                    math.dist(p1, p2) for p1, p2 in zip(pts, pts[1:])
-                )
+                longitud = sum(math.dist(p1, p2) for p1, p2 in zip(pts, pts[1:]))
                 pts_candidatos.append((longitud, pts))
-
-        pts = (
-            min(pts_candidatos, key=lambda candidato: candidato[0])[1]
-            if pts_candidatos
-            else [inst.coords(a), inst.coords(b)]
-        )
+        pts = min(pts_candidatos, key=lambda candidato: candidato[0])[1] if pts_candidatos else [inst.coords(a), inst.coords(b)]
         origen = inst.coords(a)
-        if math.dist(pts[-1], origen) < math.dist(pts[0], origen):
-            pts = pts[::-1]
-
+        if math.dist(pts[-1], origen) < math.dist(pts[0], origen): pts = pts[::-1]
         if tramo:
             ultimo_punto = tramo[-1]
-            if math.dist(ultimo_punto, pts[-1]) < math.dist(ultimo_punto, pts[0]):
-                pts = pts[::-1]
-            if math.dist(tramo[-1], pts[0]) < 1e-5:
-                tramo.extend(pts[1:])
-            else:
-                tramo.extend(pts)
-        else:
-            tramo.extend(pts)
-
+            if math.dist(ultimo_punto, pts[-1]) < math.dist(ultimo_punto, pts[0]): pts = pts[::-1]
+            if math.dist(tramo[-1], pts[0]) < 1e-5: tramo.extend(pts[1:])
+            else: tramo.extend(pts)
+        else: tramo.extend(pts)
     lats.extend(lat for lat, _ in tramo)
     lons.extend(lon for _, lon in tramo)
-
     return lats, lons
 
-
-def _flechas_ruta(
-    lats: list[float | None], lons: list[float | None]
-) -> tuple[list, list]:
-    """Devuelve flechas sólidas pequeñas, espaciadas y agrupadas en una traza."""
-    if len(lats) < 2:
-        return [], []
-
+def _flechas_ruta(lats: list[float | None], lons: list[float | None]) -> tuple[list, list]:
+    if len(lats) < 2: return [], []
     segmentos = []
     distancia_total = 0.0
     for idx in range(len(lats) - 1):
         lat1, lon1 = lats[idx], lons[idx]
         lat2, lon2 = lats[idx + 1], lons[idx + 1]
-        if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
-            continue
+        if lat1 is None or lon1 is None or lat2 is None or lon2 is None: continue
         escala_lon = 111_320 * math.cos(math.radians((lat1 + lat2) / 2))
         este = (lon2 - lon1) * escala_lon
         norte = (lat2 - lat1) * 111_320
         longitud = math.hypot(este, norte)
-        if longitud < 1e-6:
-            continue
+        if longitud < 1e-6: continue
         segmentos.append((lat1, lon1, lat2, lon2, este, norte, longitud))
         distancia_total += longitud
-
-    if not segmentos:
-        return [], []
-
+    if not segmentos: return [], []
     cantidad = min(30, max(2, round(distancia_total / 200)))
-    distancias_objetivo = [
-        distancia_total * (idx + 1) / (cantidad + 1) for idx in range(cantidad)
-    ]
+    distancias_objetivo = [distancia_total * (idx + 1) / (cantidad + 1) for idx in range(cantidad)]
     flecha_lats: list = []
     flecha_lons: list = []
     acumulada = 0.0
     objetivo_idx = 0
-
     for lat1, lon1, lat2, lon2, este, norte, longitud in segmentos:
-        while (
-            objetivo_idx < len(distancias_objetivo)
-            and distancias_objetivo[objetivo_idx] <= acumulada + longitud
-        ):
+        while objetivo_idx < len(distancias_objetivo) and distancias_objetivo[objetivo_idx] <= acumulada + longitud:
             fraccion = (distancias_objetivo[objetivo_idx] - acumulada) / longitud
             lat = lat1 + (lat2 - lat1) * fraccion
             lon = lon1 + (lon2 - lon1) * fraccion
@@ -401,35 +301,20 @@ def _flechas_ruta(
             cola_der = (-ux * 12 + uy * 2.5, -uy * 12 - ux * 2.5)
             cuello_der = (ux * 2 + uy * 2.5, uy * 2 - ux * 2.5)
             hombro_der = (ux * 2 + uy * 8, uy * 2 - ux * 8)
-            vertices = [
-                cola_izq,
-                cuello_izq,
-                hombro_izq,
-                punta,
-                hombro_der,
-                cuello_der,
-                cola_der,
-                cola_izq,
-            ]
+            vertices = [cola_izq, cuello_izq, hombro_izq, punta, hombro_der, cuello_der, cola_der, cola_izq]
             flecha_lats.extend(lat + norte / 111_320 for _, norte in vertices)
             flecha_lons.extend(lon + este / escala_lon for este, _ in vertices)
             flecha_lats.append(None)
             flecha_lons.append(None)
             objetivo_idx += 1
         acumulada += longitud
-
     return flecha_lats, flecha_lons
 
-
-def construir_mapa_conductor(
-    inst, i: int, ruta: Ruta, filtro_trayecto: str = "ambos"
-) -> go.Figure:
+def construir_mapa_conductor(inst, i: int, ruta: Ruta, filtro_trayecto: str = "ambos") -> go.Figure:
     color = COLORES[i % len(COLORES)]
     (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(inst, ruta)
     ida_flecha_lats, ida_flecha_lons = _flechas_ruta(ida_lats, ida_lons)
-    vuelta_flecha_lats, vuelta_flecha_lons = _flechas_ruta(
-        vuelta_lats, vuelta_lons
-    )
+    vuelta_flecha_lats, vuelta_flecha_lons = _flechas_ruta(vuelta_lats, vuelta_lons)
     numero = {c: k + 1 for k, c in enumerate(inst.clientes)}
     plat = [inst.coords(c)[0] for c in ruta.clientes]
     plon = [inst.coords(c)[1] for c in ruta.clientes]
@@ -437,249 +322,83 @@ def construir_mapa_conductor(
     mostrar_ida = filtro_trayecto in {"ida", "ambos"}
     mostrar_vuelta = filtro_trayecto in {"vuelta", "ambos"}
     trazas_ruta = [
-        go.Scattermap(
-            lat=ida_lats,
-            lon=ida_lons,
-            mode="lines",
-            line={"width": 4, "color": color},
-            name="Ida",
-            visible=mostrar_ida,
-            hoverinfo="skip",
-        ),
-        go.Scattermap(
-            lat=vuelta_lats,
-            lon=vuelta_lons,
-            mode="lines",
-            line={"width": 4, "color": color},
-            opacity=0.65,
-            name="Vuelta",
-            visible=mostrar_vuelta,
-            hoverinfo="skip",
-        ),
-        go.Scattermap(
-            lat=ida_flecha_lats,
-            lon=ida_flecha_lons,
-            mode="lines",
-            fill="toself",
-            fillcolor="white",
-            line={"width": 1, "color": "#174d3e"},
-            visible=mostrar_ida,
-            hoverinfo="skip",
-        ),
-        go.Scattermap(
-            lat=vuelta_flecha_lats,
-            lon=vuelta_flecha_lons,
-            mode="lines",
-            fill="toself",
-            fillcolor="white",
-            line={"width": 1, "color": "#174d3e"},
-            visible=mostrar_vuelta,
-            hoverinfo="skip",
-        ),
+        go.Scattermap(lat=ida_lats, lon=ida_lons, mode="lines", line={"width": 4, "color": color}, name="Ida", visible=mostrar_ida, hoverinfo="skip"),
+        go.Scattermap(lat=vuelta_lats, lon=vuelta_lons, mode="lines", line={"width": 4, "color": color}, opacity=0.65, name="Vuelta", visible=mostrar_vuelta, hoverinfo="skip"),
+        go.Scattermap(lat=ida_flecha_lats, lon=ida_flecha_lons, mode="lines", fill="toself", fillcolor="white", line={"width": 1, "color": "#174d3e"}, visible=mostrar_ida, hoverinfo="skip"),
+        go.Scattermap(lat=vuelta_flecha_lats, lon=vuelta_flecha_lons, mode="lines", fill="toself", fillcolor="white", line={"width": 1, "color": "#174d3e"}, visible=mostrar_vuelta, hoverinfo="skip"),
     ]
-    fig = go.Figure(
-        [
-            *trazas_ruta,
-            go.Scattermap(
-                lat=plat,
-                lon=plon,
-                mode="markers+text",
-                marker={"size": 18, "color": color},
-                text=[str(k + 1) for k in range(len(ruta.clientes))],
-                textfont={"color": "white", "size": 11},
-                customdata=[numero[c] for c in ruta.clientes],
-                hovertemplate="Parada %{text} · Punto %{customdata}<extra></extra>",
-            ),
-            go.Scattermap(
-                lat=[dlat],
-                lon=[dlon],
-                mode="markers",
-                marker={"size": 16, "color": "#e9c46a"},
-                hovertemplate="Patio<extra></extra>",
-            ),
-        ]
-    )
-    centro, zoom = _encuadre(
-        [
-            lat
-            for trayecto_lats in (ida_lats, vuelta_lats)
-            for lat in trayecto_lats
-            if lat is not None
-        ]
-        + [dlat],
-        [
-            lon
-            for trayecto_lons in (ida_lons, vuelta_lons)
-            for lon in trayecto_lons
-            if lon is not None
-        ]
-        + [dlon],
-        480,
-        360,
-    )
-    fig.update_layout(
-        margin={"l": 0, "r": 0, "t": 0, "b": 0},
-        showlegend=False,
-        map={
-            "style": "open-street-map",
-            "center": centro,
-            "zoom": zoom,
-            "uirevision": "constante",
-        },
-        autosize=True,
-        uirevision=f"conductor-{i}-{ruta.clientes}",
-    )
+    fig = go.Figure([
+        *trazas_ruta,
+        go.Scattermap(lat=plat, lon=plon, mode="markers+text", marker={"size": 18, "color": color}, text=[str(k + 1) for k in range(len(ruta.clientes))], textfont={"color": "white", "size": 11}, customdata=[numero[c] for c in ruta.clientes], hovertemplate="Parada %{text} · Punto %{customdata}<extra></extra>"),
+        go.Scattermap(lat=[dlat], lon=[dlon], mode="markers", marker={"size": 16, "color": "#e9c46a"}, hovertemplate="Patio<extra></extra>"),
+    ])
+    centro, zoom = _encuadre([lat for trayecto_lats in (ida_lats, vuelta_lats) for lat in trayecto_lats if lat is not None] + [dlat], [lon for trayecto_lons in (ida_lons, vuelta_lons) for lon in trayecto_lons if lon is not None] + [dlon], 480, 360)
+    fig.update_layout(margin={"l": 0, "r": 0, "t": 0, "b": 0}, showlegend=False, map={"style": "open-street-map", "center": centro, "zoom": zoom, "uirevision": "constante"}, autosize=True, uirevision=f"conductor-{i}-{ruta.clientes}")
     return fig
 
-
-def construir_mapa(
-    inst, sol: Solucion, filtro_trayecto: str = "ambos"
-) -> go.Figure:
+def construir_mapa(inst, sol: Solucion, filtro_trayecto: str = "ambos") -> go.Figure:
     fig = go.Figure()
-
     for i, ruta in enumerate(sol.rutas):
         (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(inst, ruta)
         color = COLORES[i % len(COLORES)]
-        fig.add_traces(
-            [
-                go.Scattermap(
-                    lat=ida_lats,
-                    lon=ida_lons,
-                    mode="lines",
-                    line=dict(width=3.2, color=color),
-                    name=f"Ruta {i + 1} · ida",
-                    visible=filtro_trayecto in {"ida", "ambos"},
-                    hoverinfo="name",
-                ),
-                go.Scattermap(
-                    lat=vuelta_lats,
-                    lon=vuelta_lons,
-                    mode="lines",
-                    line=dict(width=3.2, color=color),
-                    opacity=0.65,
-                    name=f"Ruta {i + 1} · vuelta",
-                    visible=filtro_trayecto in {"vuelta", "ambos"},
-                    hoverinfo="name",
-                ),
-            ]
-        )
-
+        fig.add_traces([
+            go.Scattermap(lat=ida_lats, lon=ida_lons, mode="lines", line=dict(width=3.2, color=color), name=f"Ruta {i + 1} · ida", visible=filtro_trayecto in {"ida", "ambos"}, hoverinfo="name"),
+            go.Scattermap(lat=vuelta_lats, lon=vuelta_lons, mode="lines", line=dict(width=3.2, color=color), opacity=0.65, name=f"Ruta {i + 1} · vuelta", visible=filtro_trayecto in {"vuelta", "ambos"}, hoverinfo="name"),
+        ])
     clat = [inst.coords(c)[0] for c in inst.clientes]
     clon = [inst.coords(c)[1] for c in inst.clientes]
-    ctext = [
-        f"Punto {i + 1}<br>{inst.demanda[c]:.0f} kg base"
-        for i, c in enumerate(inst.clientes)
-    ]
-    fig.add_trace(
-        go.Scattermap(
-            lat=clat,
-            lon=clon,
-            mode="markers",
-            marker=dict(size=9, color="#1a1a1a"),
-            name="Acumulación",
-            text=ctext,
-            hovertemplate="%{text}<extra></extra>",
-        )
-    )
-
+    ctext = [f"Punto {i + 1}<br>{inst.demanda[c]:.0f} kg base" for i, c in enumerate(inst.clientes)]
+    fig.add_trace(go.Scattermap(lat=clat, lon=clon, mode="markers", marker=dict(size=9, color="#1a1a1a"), name="Acumulación", text=ctext, hovertemplate="%{text}<extra></extra>"))
     if sol.no_cubiertos:
         ulat = [inst.coords(c)[0] for c in sol.no_cubiertos]
         ulon = [inst.coords(c)[1] for c in sol.no_cubiertos]
-        fig.add_trace(
-            go.Scattermap(
-                lat=ulat,
-                lon=ulon,
-                mode="markers",
-                marker=dict(size=11, color="#c1121f"),
-                name="No cubiertos",
-            )
-        )
-
+        fig.add_trace(go.Scattermap(lat=ulat, lon=ulon, mode="markers", marker=dict(size=11, color="#c1121f"), name="No cubiertos"))
     dlat, dlon = inst.coords(inst.depot)
-    fig.add_trace(
-        go.Scattermap(
-            lat=[dlat],
-            lon=[dlon],
-            mode="markers",
-            marker=dict(size=16, color="#e9c46a"),
-            name="Patio",
-            text=["Patio de operaciones (Suba)"],
-            hovertemplate="%{text}<extra></extra>",
-        )
-    )
-
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        map=dict(
-            style="open-street-map",
-            center=dict(lat=SUBA_CENTER[0], lon=SUBA_CENTER[1]),
-            zoom=13.1,
-            uirevision="constante",
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=0.01,
-            x=0.01,
-            bgcolor="rgba(255,255,255,0.85)",
-        ),
-        autosize=True,
-        uirevision="mapa",
-    )
+    fig.add_trace(go.Scattermap(lat=[dlat], lon=[dlon], mode="markers", marker=dict(size=16, color="#e9c46a"), name="Patio", text=["Patio de operaciones (Suba)"], hovertemplate="%{text}<extra></extra>"))
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), map=dict(style="open-street-map", center=dict(lat=SUBA_CENTER[0], lon=SUBA_CENTER[1]), zoom=13.1, uirevision="constante"), legend=dict(orientation="h", yanchor="bottom", y=0.01, x=0.01, bgcolor="rgba(255,255,255,0.85)"), autosize=True, uirevision="mapa")
     return fig
-
 
 def _estado_asistente() -> str:
     falta = agente.falta_configuracion()
-    if falta:
-        return falta
+    if falta: return falta
     cfg = agente.configuracion()
-    return (
-        f"Modelo {cfg['modelo']} vía {urlparse(cfg['base_url']).netloc}. "
-        "Responde con los datos del escenario que tengas en pantalla."
-    )
-
+    return f"Modelo {cfg['modelo']} vía {urlparse(cfg['base_url']).netloc}. Responde con los datos del escenario."
 
 def _render_chat(historial: list[dict]) -> list:
     if not historial:
-        return [
-            html.P(
-                "Ejemplos: ¿Qué conductor va más cargado? ¿Por qué quedan puntos sin "
-                "recoger? ¿A qué hora llega el conductor 2 al punto 14?",
-                className="kpi-sub",
-            )
-        ]
-    burbujas = [
-        html.Div(
-            className=f"chat-msg {m['role']}",
-            children=dcc.Markdown(m["content"]) if m["role"] == "assistant" else m["content"],
-        )
-        for m in historial
-    ]
-    # El contenedor usa column-reverse para quedar anclado al último mensaje.
+        return [html.P("Ejemplos: ¿Qué conductor va más cargado? ¿Por qué quedan puntos sin recoger?", className="kpi-sub")]
+    burbujas = [html.Div(className=f"chat-msg {m['role']}", children=dcc.Markdown(m["content"]) if m["role"] == "assistant" else m["content"]) for m in historial]
     return burbujas[::-1]
 
 
-print("Cargando red vial de Suba (OpenStreetMap)...")
-INSTANCIA = cargar_instancia()
-print(
-    f"Grafo: {INSTANCIA.grafo.number_of_nodes()} nodos, "
-    f"{INSTANCIA.grafo.number_of_edges()} aristas, "
-    f"{len(INSTANCIA.clientes)} puntos de demanda."
+layout_ingesta = html.Div(
+    id="upload-container",
+    style={"padding": "40px", "maxWidth": "800px", "margin": "0 auto", "textAlign": "center", "display": "block"},
+    children=[
+        html.H1("Configuración del Escenario Base (Carga de Puntos)"),
+        dcc.Upload(
+            id="upload-data",
+            children=html.Div(["Arrastra o haz clic para subir tu CSV / Excel con puntos de recolección"]),
+            style={
+                "width": "100%", "height": "80px", "lineHeight": "80px",
+                "borderWidth": "2px", "borderStyle": "dashed", "borderRadius": "8px", "cursor": "pointer"
+            },
+            multiple=False
+        ),
+        html.Div(id="mapping-ui-container", style={"marginTop": "30px"}),
+        html.Div(id="upload-error-msg", style={"color": "red", "marginTop": "20px", "fontWeight": "bold"}),
+        dcc.Store(id="store-instancia") 
+    ]
 )
 
-app = Dash(__name__)
-app.title = "SAGI · Residuos Suba"
-
-app.layout = html.Div(
+layout_dashboard = html.Div(
+    id="dashboard-container",
+    style={"display": "none"},
     className="shell",
     children=[
         html.Header(
             children=[
-                html.P(
-                    "Sistema de análisis georeactivo inteligente",
-                    className="eyebrow",
-                ),
+                html.P("Sistema de análisis georeactivo inteligente", className="eyebrow"),
                 html.H1("SAGI"),
             ]
         ),
@@ -691,168 +410,46 @@ app.layout = html.Div(
                     children=[
                         html.H2("Escenario hipotético"),
                         html.Label("Trayecto visible"),
-                        dcc.RadioItems(
-                            id="filtro-trayecto",
-                            options=[
-                                {"label": "Recolección / Ida", "value": "ida"},
-                                {"label": "Regreso al patio", "value": "vuelta"},
-                                {"label": "Ambos", "value": "ambos"},
-                            ],
-                            value="ambos",
-                            inline=True,
-                        ),
+                        dcc.RadioItems(id="filtro-trayecto", options=[{"label": "Recolección / Ida", "value": "ida"}, {"label": "Regreso al patio", "value": "vuelta"}, {"label": "Ambos", "value": "ambos"}], value="ambos", inline=True),
                         html.Label("Capacidad del vehículo (kg)"),
-                        dcc.Slider(
-                            id="capacidad",
-                            min=400,
-                            max=4000,
-                            step=100,
-                            value=1200,
-                            marks={400: "400", 1200: "1.200", 2500: "2.500", 4000: "4.000"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="capacidad", min=400, max=4000, step=100, value=1200, marks={400: "400", 1200: "1.200", 2500: "2.500", 4000: "4.000"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Número máximo de vehículos"),
-                        dcc.Slider(
-                            id="vehiculos",
-                            min=1,
-                            max=12,
-                            step=1,
-                            value=6,
-                            marks={1: "1", 6: "6", 12: "12"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="vehiculos", min=1, max=12, step=1, value=6, marks={1: "1", 6: "6", 12: "12"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Multiplicador de demanda"),
-                        dcc.Slider(
-                            id="demanda",
-                            min=0.5,
-                            max=2.5,
-                            step=0.1,
-                            value=1.0,
-                            marks={0.5: "0.5×", 1: "1×", 1.5: "1.5×", 2.5: "2.5×"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="demanda", min=0.5, max=2.5, step=0.1, value=1.0, marks={0.5: "0.5×", 1: "1×", 1.5: "1.5×", 2.5: "2.5×"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Ventana de jornada (horas)"),
-                        dcc.Slider(
-                            id="jornada",
-                            min=4,
-                            max=12,
-                            step=0.5,
-                            value=8,
-                            marks={4: "4 h", 8: "8 h", 12: "12 h"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="jornada", min=4, max=12, step=0.5, value=8, marks={4: "4 h", 8: "8 h", 12: "12 h"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Velocidad promedio (km/h)"),
-                        dcc.Slider(
-                            id="velocidad",
-                            min=12,
-                            max=40,
-                            step=1,
-                            value=22,
-                            marks={12: "12", 22: "22", 40: "40"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="velocidad", min=12, max=40, step=1, value=22, marks={12: "12", 22: "22", 40: "40"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Tiempo de servicio por punto (min)"),
-                        dcc.Slider(
-                            id="servicio",
-                            min=3,
-                            max=20,
-                            step=1,
-                            value=SERVICIO_BASE_MIN,
-                            marks={3: "3", 8: "8", 20: "20"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="servicio", min=3, max=20, step=1, value=SERVICIO_BASE_MIN, marks={3: "3", 8: "8", 20: "20"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Costo operativo (COP / km)"),
-                        dcc.Slider(
-                            id="costo",
-                            min=2000,
-                            max=9000,
-                            step=250,
-                            value=COSTO_KM_BASE,
-                            marks={2000: "2k", 4500: "4.5k", 9000: "9k"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="costo", min=2000, max=9000, step=250, value=COSTO_KM_BASE, marks={2000: "2k", 4500: "4.5k", 9000: "9k"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Costo fijo por vehículo (COP / día)"),
-                        dcc.Slider(
-                            id="costo_fijo",
-                            min=0,
-                            max=600_000,
-                            step=10_000,
-                            value=COSTO_FIJO_VEHICULO_BASE,
-                            marks={0: "0", 150_000: "150k", 600_000: "600k"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="costo_fijo", min=0, max=600_000, step=10_000, value=COSTO_FIJO_VEHICULO_BASE, marks={0: "0", 150_000: "150k", 600_000: "600k"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Label("Penalización por kg no recogido (COP / kg)"),
-                        dcc.Slider(
-                            id="penalizacion",
-                            min=0,
-                            max=3000,
-                            step=100,
-                            value=PENALIZACION_KG_BASE,
-                            marks={0: "0", 500: "500", 3000: "3k"},
-                            tooltip={"placement": "bottom", "always_visible": False},
-                        ),
+                        dcc.Slider(id="penalizacion", min=0, max=3000, step=100, value=PENALIZACION_KG_BASE, marks={0: "0", 500: "500", 3000: "3k"}, tooltip={"placement": "bottom", "always_visible": False}),
                         html.Div(id="estado", className="estado"),
                     ],
                 ),
                 html.Main(
                     children=[
                         html.Div(id="kpis", className="kpis"),
-                        html.Div(
-                            className="mapa-wrap",
-                            children=dcc.Graph(
-                                id="mapa",
-                                config={"displayModeBar": False, "scrollZoom": True},
-                                responsive=True,
-                                style={"height": "720px"},
-                            ),
-                        ),
-                        html.Section(
-                            className="conductores",
-                            children=[
-                                html.H2("Conductores"),
-                                html.P(
-                                    "Detalle por ruta. Se recalcula con los "
-                                    f"parámetros del escenario (salida {_fmt_hora(0)}).",
-                                    className="kpi-sub",
-                                ),
-                                html.Div(id="conductores"),
-                            ],
-                        ),
+                        html.Div(className="mapa-wrap", children=dcc.Graph(id="mapa", config={"displayModeBar": False, "scrollZoom": True}, responsive=True, style={"height": "720px"})),
+                        html.Section(className="conductores", children=[html.H2("Conductores"), html.P(f"Detalle por ruta. Salida {_fmt_hora(0)}.", className="kpi-sub"), html.Div(id="conductores")]),
                         html.Section(
                             className="asistente",
                             children=[
                                 html.H2("Asistente de rutas"),
                                 html.P(_estado_asistente(), className="kpi-sub"),
                                 dcc.Store(id="chat-historial", data=[]),
-                                dcc.Loading(
-                                    html.Div(
-                                        _render_chat([]),
-                                        id="chat-mensajes",
-                                        className="chat-mensajes",
-                                    ),
-                                    type="dot",
-                                    overlay_style={"visibility": "visible", "opacity": 0.6},
-                                ),
+                                dcc.Loading(html.Div(_render_chat([]), id="chat-mensajes", className="chat-mensajes"), type="dot", overlay_style={"visibility": "visible", "opacity": 0.6}),
                                 html.Div(
                                     className="chat-entrada",
                                     children=[
-                                        dcc.Input(
-                                            id="chat-pregunta",
-                                            type="text",
-                                            placeholder="Pregunta sobre las rutas del "
-                                            "escenario actual...",
-                                            className="chat-input",
-                                            n_submit=0,
-                                        ),
-                                        html.Button(
-                                            "Preguntar", id="chat-enviar", n_clicks=0
-                                        ),
-                                        html.Button(
-                                            "Limpiar",
-                                            id="chat-limpiar",
-                                            n_clicks=0,
-                                            className="secundario",
-                                        ),
+                                        dcc.Input(id="chat-pregunta", type="text", placeholder="Pregunta sobre las rutas...", className="chat-input", n_submit=0),
+                                        html.Button("Preguntar", id="chat-enviar", n_clicks=0),
+                                        html.Button("Limpiar", id="chat-limpiar", n_clicks=0, className="secundario"),
                                     ],
                                 ),
                             ],
@@ -864,55 +461,149 @@ app.layout = html.Div(
     ],
 )
 
+app.layout = html.Div([
+    dcc.Location(id='url_redirect', refresh=True), 
+    layout_ingesta, 
+    layout_dashboard
+])
 
-SLIDERS = (
-    "capacidad",
-    "vehiculos",
-    "demanda",
-    "jornada",
-    "velocidad",
-    "servicio",
-    "costo",
-    "costo_fijo",
-    "penalizacion",
-)
+SLIDERS = ("capacidad", "vehiculos", "demanda", "jornada", "velocidad", "servicio", "costo", "costo_fijo", "penalizacion")
 
+# Caché global determinista de soluciones para mitigar el recalculo del NP-Hard en cada deslizamiento de la UI
+CACHE_VRP = {}
 
-@lru_cache(maxsize=32)
-def resolver(
-    capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion
-) -> Solucion:
-    return resolver_vrp(
-        INSTANCIA,
-        capacidad_kg=float(capacidad),
-        max_vehiculos=int(vehiculos),
-        demanda_mult=float(demanda),
-        jornada_h=float(jornada),
-        velocidad_kmh=float(velocidad),
-        servicio_min=float(servicio),
-        costo_km=float(costo),
-        costo_fijo_vehiculo=float(costo_fijo),
+def resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion) -> Solucion:
+    session_id = getattr(inst, "_session_id", id(inst))
+    cache_key = (session_id, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
+    
+    if cache_key in CACHE_VRP:
+        return CACHE_VRP[cache_key]
+        
+    sol = resolver_vrp(
+        inst, capacidad_kg=float(capacidad), max_vehiculos=int(vehiculos),
+        demanda_mult=float(demanda), jornada_h=float(jornada), velocidad_kmh=float(velocidad),
+        servicio_min=float(servicio), costo_km=float(costo), costo_fijo_vehiculo=float(costo_fijo),
         penalizacion_kg=float(penalizacion),
     )
+    
+    # Política básica de eviction para no sobrecargar la RAM del contenedor
+    if len(CACHE_VRP) > 128:
+        CACHE_VRP.pop(next(iter(CACHE_VRP)))
+        
+    CACHE_VRP[cache_key] = sol
+    return sol
+
+
+@app.callback(
+    Output("mapping-ui-container", "children"),
+    Output("upload-error-msg", "children"),
+    Input("upload-data", "contents"),
+    State("upload-data", "filename"),
+    prevent_initial_call=True
+)
+def procesar_archivo_llm(contents, filename):
+    if not contents:
+        return no_update, no_update
+    
+    tipo_contenido, string_contenido = contents.split(',')
+    decodificado = base64.b64decode(string_contenido)
+    
+    try:
+        if 'csv' in filename.lower():
+            df = pd.read_csv(io.StringIO(decodificado.decode('utf-8')))
+        elif 'xls' in filename.lower():
+            df = pd.read_excel(io.BytesIO(decodificado))
+        else:
+            return None, "Formato no soportado. Sube un CSV o Excel."
+    except Exception as e:
+        return None, f"Error al leer el archivo: {str(e)}"
+    
+    prompt_mapeo = (
+        "Analiza las siguientes cabeceras y las 3 primeras filas de datos de este dataset geográfico. "
+        "Devuelve estrictamente un objeto JSON con esta estructura de mapeo: "
+        '{"id_punto": "nombre_columna", "latitud": "nombre_columna", "longitud": "nombre_columna", "demanda": "nombre_columna"}. '
+        "No incluyas explicaciones adicionales, solo el JSON.\n\nDatos de muestra:\n"
+        f"{df.head(3).to_csv(index=False)}"
+    )
+    
+    try:
+        historial = [{"role": "user", "content": prompt_mapeo}]
+        respuesta_llm = agente.preguntar(historial, "")
+        texto_json = respuesta_llm.replace("```json", "").replace("```", "").strip()
+        mapeo_sugerido = json.loads(texto_json)
+        columnas = df.columns.tolist()
+        
+        ui_mapeo = html.Div([
+            html.H3("Confirma las columnas detectadas por la IA:"),
+            html.Div([html.Label("ID Punto: "), dcc.Dropdown(id="drop-id", options=columnas, value=mapeo_sugerido.get("id_punto"))]),
+            html.Div([html.Label("Latitud: "), dcc.Dropdown(id="drop-lat", options=columnas, value=mapeo_sugerido.get("latitud"))]),
+            html.Div([html.Label("Longitud: "), dcc.Dropdown(id="drop-lon", options=columnas, value=mapeo_sugerido.get("longitud"))]),
+            html.Div([html.Label("Demanda (kg): "), dcc.Dropdown(id="drop-dem", options=columnas, value=mapeo_sugerido.get("demanda"))]),
+            html.Button("Confirmar Mapeo y Generar Mapa", id="btn-confirmar", style={"marginTop": "20px"}),
+        ], style={"textAlign": "left", "maxWidth": "400px", "margin": "0 auto"})
+        
+        return ui_mapeo, ""
+    except Exception as e:
+        return None, "Error en la validación del agente. Asegúrate de que el archivo contiene datos de geolocalización claros."
+
+
+@app.callback(
+    Output("store-instancia", "data"),
+    Output("upload-container", "style"),
+    Output("dashboard-container", "style"),
+    Output("upload-error-msg", "children", allow_duplicate=True),
+    Input("btn-confirmar", "n_clicks"),
+    State("upload-data", "contents"),
+    State("upload-data", "filename"),
+    State("drop-id", "value"),
+    State("drop-lat", "value"),
+    State("drop-lon", "value"),
+    State("drop-dem", "value"),
+    prevent_initial_call=True
+)
+def confirmar_y_generar_instancia(n_clicks, contents, filename, col_id, col_lat, col_lon, col_dem):
+    if not n_clicks: return no_update
+    if not all([col_lat, col_lon]):
+        return no_update, no_update, no_update, "Error: Es obligatorio definir las columnas de Latitud y Longitud."
+        
+    tipo_contenido, string_contenido = contents.split(',')
+    decodificado = base64.b64decode(string_contenido)
+    
+    if 'csv' in filename.lower(): df = pd.read_csv(io.StringIO(decodificado.decode('utf-8')))
+    else: df = pd.read_excel(io.BytesIO(decodificado))
+    
+    try:
+        df_renamed = df.rename(columns={col_id: "id_punto", col_lat: "latitud", col_lon: "longitud", col_dem: "demanda"})
+        df_renamed["latitud"] = pd.to_numeric(df_renamed["latitud"])
+        df_renamed["longitud"] = pd.to_numeric(df_renamed["longitud"])
+    except (ValueError, KeyError):
+        return no_update, no_update, no_update, "Fallo Crítico: Las columnas seleccionadas no existen o no son numéricas flotantes."
+    
+    instancia_cliente = cargar_instancia(df_renamed)
+    instancia_cliente._session_id = str(uuid.uuid4()) # ID único para recuperar el caché
+    
+    return ServersideOutput(instancia_cliente), {"display": "none"}, {"display": "block"}, ""
 
 
 @app.callback(
     Output({"type": "mapa-conductor-graph", "index": MATCH}, "figure"),
+    Output("url_redirect", "pathname", allow_duplicate=True),
     Input({"type": "conductor", "index": MATCH}, "open"),
     Input({"type": "filtro-conductor", "index": MATCH}, "value"),
+    State("store-instancia", "data"),
     *[State(s, "value") for s in SLIDERS],
+    prevent_initial_call=True
 )
-def mapa_conductor(abierto, filtro_conductor, *valores):
-    # Solo se monta el mapa del panel abierto: cada mapa es un contexto WebGL.
-    if not abierto:
-        return no_update
-    sol = resolver(*valores)
-    i = ctx.outputs_list["id"]["index"]
-    if i >= len(sol.rutas):
-        return no_update
-    return construir_mapa_conductor(
-        INSTANCIA, i, sol.rutas[i], filtro_conductor
-    )
+def mapa_conductor(abierto, filtro_conductor, inst, *valores):
+    if inst is None: 
+        return no_update, "/" # Desalojo de caché: Recarga forzosa al index de ingesta
+    if not abierto: 
+        return no_update, no_update
+        
+    sol = resolver(inst, *valores)
+    i = ctx.outputs_list[0]["id"]["index"]
+    if i >= len(sol.rutas): return no_update, no_update
+    return construir_mapa_conductor(inst, i, sol.rutas[i], filtro_conductor), no_update
 
 
 @app.callback(
@@ -920,6 +611,7 @@ def mapa_conductor(abierto, filtro_conductor, *valores):
     Output("kpis", "children"),
     Output("estado", "children"),
     Output("conductores", "children"),
+    Output("url_redirect", "pathname"),
     Input("capacidad", "value"),
     Input("vehiculos", "value"),
     Input("demanda", "value"),
@@ -930,145 +622,85 @@ def mapa_conductor(abierto, filtro_conductor, *valores):
     Input("costo_fijo", "value"),
     Input("penalizacion", "value"),
     Input("filtro-trayecto", "value"),
+    State("store-instancia", "data"),
     State({"type": "conductor", "index": ALL}, "open"),
     State({"type": "conductor", "index": ALL}, "id"),
+    prevent_initial_call=True
 )
 def actualizar(
-    capacidad,
-    vehiculos,
-    demanda,
-    jornada,
-    velocidad,
-    servicio,
-    costo,
-    costo_fijo,
-    penalizacion,
-    filtro_trayecto,
-    paneles_abiertos,
-    paneles_ids,
+    capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo,
+    penalizacion, filtro_trayecto, inst, paneles_abiertos, paneles_ids,
 ):
+    if inst is None: 
+        return no_update, no_update, no_update, no_update, "/" # Desalojo de caché
+        
     if ctx.triggered_id == "filtro-trayecto":
-        sol = resolver(
-            capacidad,
-            vehiculos,
-            demanda,
-            jornada,
-            velocidad,
-            servicio,
-            costo,
-            costo_fijo,
-            penalizacion,
-        )
-        return (
-            construir_mapa(INSTANCIA, sol, filtro_trayecto),
-            no_update,
-            no_update,
-            no_update,
-        )
+        sol = resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
+        return construir_mapa(inst, sol, filtro_trayecto), no_update, no_update, no_update, no_update
 
-    sol = resolver(
-        capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion
-    )
-    abiertos = {
-        pid["index"] for pid, abierto in zip(paneles_ids or [], paneles_abiertos or []) if abierto
-    }
+    sol = resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
+    abiertos = {pid["index"] for pid, abierto in zip(paneles_ids or [], paneles_abiertos or []) if abierto}
     kpis = [
-        _kpi(
-            "Costo total",
-            _fmt_cop(sol.costo_cop),
-            f"km {_fmt_cop(sol.costo_variable_cop)} · flota {_fmt_cop(sol.costo_fijo_cop)}"
-            f" · penalización {_fmt_cop(sol.penalizacion_cop)}",
-        ),
+        _kpi("Costo total", _fmt_cop(sol.costo_cop), f"km {_fmt_cop(sol.costo_variable_cop)} · flota {_fmt_cop(sol.costo_fijo_cop)} · penalización {_fmt_cop(sol.penalizacion_cop)}"),
         _kpi("Distancia", f"{sol.distancia_total_m / 1000:.1f} km", "red vial OSM"),
-        _kpi(
-            "Horas-vehículo",
-            f"{sol.tiempo_total_min / 60:.1f} h",
-            f"ruta más larga {sol.tiempo_max_ruta_min / 60:.1f} h",
-        ),
-        _kpi(
-            "Vehículos",
-            f"{sol.vehiculos_usados} / {int(vehiculos)}",
-            f"{sol.demanda_cubierta_kg:.0f} kg cubiertos",
-        ),
-        _kpi(
-            "No recogido",
-            f"{sol.demanda_no_cubierta_kg:.0f} kg",
-            f"{len(sol.no_cubiertos)} punto(s)",
-        ),
+        _kpi("Horas-vehículo", f"{sol.tiempo_total_min / 60:.1f} h", f"ruta más larga {sol.tiempo_max_ruta_min / 60:.1f} h"),
+        _kpi("Vehículos", f"{sol.vehiculos_usados} / {int(vehiculos)}", f"{sol.demanda_cubierta_kg:.0f} kg cubiertos"),
+        _kpi("No recogido", f"{sol.demanda_no_cubierta_kg:.0f} kg", f"{len(sol.no_cubiertos)} punto(s)"),
     ]
-    if sol.factible:
-        estado = html.P(
-            "Escenario factible: toda la demanda cabe en capacidad, flota y jornada.",
-            className="ok",
-        )
+    if sol.factible: estado = html.P("Escenario factible: toda la demanda cabe en capacidad, flota y jornada.", className="ok")
     else:
         n = len(sol.no_cubiertos)
-        estado = html.P(
-            f"Escenario tensionado: {n} punto(s) quedan fuera. "
-            "Sube capacidad, flota o jornada, o baja la demanda.",
-            className="warn",
-        )
+        estado = html.P(f"Escenario tensionado: {n} punto(s) quedan fuera. Sube capacidad, flota o jornada, o baja la demanda.", className="warn")
+        
     conductores = construir_conductores(
-        INSTANCIA,
-        sol,
-        abiertos,
-        capacidad=float(capacidad),
-        jornada_h=float(jornada),
-        velocidad=float(velocidad),
-        servicio=float(servicio),
-        demanda=float(demanda),
-        costo_km=float(costo),
-        costo_fijo=float(costo_fijo),
+        inst, sol, abiertos, capacidad=float(capacidad), jornada_h=float(jornada),
+        velocidad=float(velocidad), servicio=float(servicio), demanda=float(demanda),
+        costo_km=float(costo), costo_fijo=float(costo_fijo),
     )
-    return (
-        construir_mapa(INSTANCIA, sol, filtro_trayecto),
-        kpis,
-        estado,
-        conductores,
-    )
-
+    return construir_mapa(inst, sol, filtro_trayecto), kpis, estado, conductores, no_update
 
 
 @app.callback(
     Output("chat-historial", "data"),
     Output("chat-mensajes", "children"),
     Output("chat-pregunta", "value"),
+    Output("url_redirect", "pathname", allow_duplicate=True),
     Input("chat-enviar", "n_clicks"),
     Input("chat-pregunta", "n_submit"),
     Input("chat-limpiar", "n_clicks"),
     State("chat-pregunta", "value"),
     State("chat-historial", "data"),
+    State("store-instancia", "data"),
     *[State(s, "value") for s in SLIDERS],
     running=[(Output("chat-enviar", "disabled"), True, False)],
     prevent_initial_call=True,
 )
-def chat(_enviar, _enter, _limpiar, pregunta, historial, *valores):
+def chat(_enviar, _enter, _limpiar, pregunta, historial, inst, *valores):
+    if inst is None: 
+        return no_update, no_update, no_update, "/" # Desalojo de caché
+        
     if ctx.triggered_id == "chat-limpiar":
-        return [], _render_chat([]), ""
+        return [], _render_chat([]), "", no_update
+        
     historial = list(historial or [])
     pregunta = (pregunta or "").strip()
     if not pregunta:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
+        
     historial.append({"role": "user", "content": pregunta})
     falta = agente.falta_configuracion()
     if falta:
         historial.append({"role": "error", "content": falta})
     else:
-        sol = resolver(*valores)
+        sol = resolver(inst, *valores)
         params = dict(zip(SLIDERS, map(float, valores)))
         try:
-            respuesta = agente.preguntar(
-                historial, agente.contexto_escenario(INSTANCIA, sol, params)
-            )
+            respuesta = agente.preguntar(historial, agente.contexto_escenario(inst, sol, params))
             historial.append({"role": "assistant", "content": respuesta})
         except RuntimeError as e:
             historial.append({"role": "error", "content": str(e)})
-    return historial, _render_chat(historial), ""
-
+            
+    return historial, _render_chat(historial), "", no_update
 
 if __name__ == "__main__":
-    app.run(
-        debug=False,
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8051)),
-    )
+    app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 8051)))
