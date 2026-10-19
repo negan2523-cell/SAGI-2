@@ -93,7 +93,7 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     try:
         # Descarga de la red usando el formato de tupla compatible con versiones recientes
         G_multi = ox.graph_from_bbox(
-            bbox=(bbox_north, bbox_south, bbox_east, bbox_west),
+            bbox_north, bbox_south, bbox_east, bbox_west,
             network_type='drive'
         )
         # Transformación crítica a DiGraph simple para aliviar memoria
