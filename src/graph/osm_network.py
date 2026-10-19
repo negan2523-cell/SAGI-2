@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 
 import networkx as nx
 import osmnx as ox
+# Desviar el tráfico a un servidor espejo de OpenStreetMap para evitar bloqueos de IP en Render
+ox.settings.overpass_endpoint = "https://lz4.overpass-api.de/api"
 import pandas as pd
 
 
