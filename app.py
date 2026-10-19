@@ -580,8 +580,7 @@ def confirmar_y_generar_instancia(n_clicks, contents, filename, col_id, col_lat,
     instancia_cliente = cargar_instancia(df_renamed)
     instancia_cliente._session_id = str(uuid.uuid4()) # ID único para recuperar el caché
     
-    return ServersideOutput(instancia_cliente), {"display": "none"}, {"display": "block"}, ""
-
+    return Serverside(instancia_cliente), {"display": "none"}, {"display": "block"}, ""
 
 @app.callback(
     Output({"type": "mapa-conductor-graph", "index": MATCH}, "figure"),
