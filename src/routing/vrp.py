@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from src.graph.osm_network import InstanciaSuba
+from src.graph.osm_network import InstanciaVRP
 
 
 @dataclass
@@ -53,7 +53,7 @@ class Parada:
 
 
 def itinerario(
-    inst: InstanciaSuba,
+    inst: InstanciaVRP,
     ruta: Ruta,
     *,
     velocidad_kmh: float,
@@ -80,7 +80,7 @@ def itinerario(
 
 @dataclass
 class _Parametros:
-    inst: InstanciaSuba
+    inst: InstanciaVRP
     capacidad_kg: float
     jornada_min: float
     velocidad_m_min: float
@@ -226,7 +226,7 @@ def _construir(
 
 
 def resolver_vrp(
-    inst: InstanciaSuba,
+    inst: InstanciaVRP,
     *,
     capacidad_kg: float,
     max_vehiculos: int,
