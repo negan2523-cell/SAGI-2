@@ -7,8 +7,15 @@ from dataclasses import dataclass, field
 
 import networkx as nx
 import osmnx as ox
-# Desviar el tráfico a un servidor espejo de OpenStreetMap para evitar bloqueos de IP en Render
-ox.settings.overpass_endpoint = "https://lz4.overpass-api.de/api"
+
+# --- CONFIGURACIÓN ANTI-BLOQUEO PARA RENDER ---
+# 1. Usar un servidor espejo oficial menos saturado
+ox.settings.overpass_endpoint = "https://overpass.kumi.systems/api"
+# 2. Identificar tu aplicación (Vital: evita que OSM te clasifique como bot)
+ox.settings.http_headers = {'User-Agent': 'SaaS_Logistico_Suba_Demo/1.0'}
+# 3. Extender el tiempo de espera para servidores gratuitos
+ox.settings.timeout = 200
+# ----------------------------------------------
 import pandas as pd
 
 
