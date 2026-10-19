@@ -178,8 +178,26 @@ def _panel_conductor(
                         ],
                     ),
                     html.Div(
-                        id={"type": "mapa-conductor", "index": i},
-                        className="mini-mapa",
+                        children=[
+                            dcc.RadioItems(
+                                id={"type": "filtro-conductor", "index": i},
+                                options=[
+                                    {"label": "Recolección / Ida", "value": "ida"},
+                                    {"label": "Regreso al patio", "value": "vuelta"},
+                                    {"label": "Ambos", "value": "ambos"},
+                                ],
+                                value="ambos",
+                                inline=True,
+                            ),
+                            dcc.Graph(
+                                id={"type": "mapa-conductor-graph", "index": i},
+                                figure=go.Figure(),
+                                className="mini-mapa",
+                                config={"displayModeBar": False, "scrollZoom": True},
+                                responsive=True,
+                                style={"height": "360px"},
+                            ),
+                        ]
                     ),
                     html.Table(
                         className="itinerario",
@@ -416,52 +434,49 @@ def construir_mapa_conductor(
     plat = [inst.coords(c)[0] for c in ruta.clientes]
     plon = [inst.coords(c)[1] for c in ruta.clientes]
     dlat, dlon = inst.coords(inst.depot)
-    trazas_ruta = []
-    if filtro_trayecto in {"ida", "ambos"}:
-        trazas_ruta.extend(
-            [
-                go.Scattermap(
-                    lat=ida_lats,
-                    lon=ida_lons,
-                    mode="lines",
-                    line={"width": 4, "color": color},
-                    name="Ida",
-                    hoverinfo="skip",
-                ),
-                go.Scattermap(
-                    lat=ida_flecha_lats,
-                    lon=ida_flecha_lons,
-                    mode="lines",
-                    fill="toself",
-                    fillcolor="white",
-                    line={"width": 1, "color": "#174d3e"},
-                    hoverinfo="skip",
-                ),
-            ]
-        )
-    if filtro_trayecto in {"vuelta", "ambos"}:
-        trazas_ruta.extend(
-            [
-                go.Scattermap(
-                    lat=vuelta_lats,
-                    lon=vuelta_lons,
-                    mode="lines",
-                    line={"width": 4, "color": color},
-                    opacity=0.65,
-                    name="Vuelta",
-                    hoverinfo="skip",
-                ),
-                go.Scattermap(
-                    lat=vuelta_flecha_lats,
-                    lon=vuelta_flecha_lons,
-                    mode="lines",
-                    fill="toself",
-                    fillcolor="white",
-                    line={"width": 1, "color": "#174d3e"},
-                    hoverinfo="skip",
-                ),
-            ]
-        )
+    mostrar_ida = filtro_trayecto in {"ida", "ambos"}
+    mostrar_vuelta = filtro_trayecto in {"vuelta", "ambos"}
+    trazas_ruta = [
+        go.Scattermap(
+            lat=ida_lats,
+            lon=ida_lons,
+            mode="lines",
+            line={"width": 4, "color": color},
+            name="Ida",
+            visible=mostrar_ida,
+            hoverinfo="skip",
+        ),
+        go.Scattermap(
+            lat=vuelta_lats,
+            lon=vuelta_lons,
+            mode="lines",
+            line={"width": 4, "color": color},
+            opacity=0.65,
+            name="Vuelta",
+            visible=mostrar_vuelta,
+            hoverinfo="skip",
+        ),
+        go.Scattermap(
+            lat=ida_flecha_lats,
+            lon=ida_flecha_lons,
+            mode="lines",
+            fill="toself",
+            fillcolor="white",
+            line={"width": 1, "color": "#174d3e"},
+            visible=mostrar_ida,
+            hoverinfo="skip",
+        ),
+        go.Scattermap(
+            lat=vuelta_flecha_lats,
+            lon=vuelta_flecha_lons,
+            mode="lines",
+            fill="toself",
+            fillcolor="white",
+            line={"width": 1, "color": "#174d3e"},
+            visible=mostrar_vuelta,
+            hoverinfo="skip",
+        ),
+    ]
     fig = go.Figure(
         [
             *trazas_ruta,
@@ -505,7 +520,12 @@ def construir_mapa_conductor(
     fig.update_layout(
         margin={"l": 0, "r": 0, "t": 0, "b": 0},
         showlegend=False,
-        map={"style": "open-street-map", "center": centro, "zoom": zoom},
+        map={
+            "style": "open-street-map",
+            "center": centro,
+            "zoom": zoom,
+            "uirevision": "constante",
+        },
         autosize=True,
         uirevision=f"conductor-{i}-{ruta.clientes}",
     )
@@ -520,19 +540,17 @@ def construir_mapa(
     for i, ruta in enumerate(sol.rutas):
         (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(inst, ruta)
         color = COLORES[i % len(COLORES)]
-        if filtro_trayecto in {"ida", "ambos"}:
-            fig.add_trace(
+        fig.add_traces(
+            [
                 go.Scattermap(
                     lat=ida_lats,
                     lon=ida_lons,
                     mode="lines",
                     line=dict(width=3.2, color=color),
                     name=f"Ruta {i + 1} · ida",
+                    visible=filtro_trayecto in {"ida", "ambos"},
                     hoverinfo="name",
-                )
-            )
-        if filtro_trayecto in {"vuelta", "ambos"}:
-            fig.add_trace(
+                ),
                 go.Scattermap(
                     lat=vuelta_lats,
                     lon=vuelta_lons,
@@ -540,9 +558,11 @@ def construir_mapa(
                     line=dict(width=3.2, color=color),
                     opacity=0.65,
                     name=f"Ruta {i + 1} · vuelta",
+                    visible=filtro_trayecto in {"vuelta", "ambos"},
                     hoverinfo="name",
-                )
-            )
+                ),
+            ]
+        )
 
     clat = [inst.coords(c)[0] for c in inst.clientes]
     clon = [inst.coords(c)[1] for c in inst.clientes]
@@ -594,6 +614,7 @@ def construir_mapa(
             style="open-street-map",
             center=dict(lat=SUBA_CENTER[0], lon=SUBA_CENTER[1]),
             zoom=13.1,
+            uirevision="constante",
         ),
         legend=dict(
             orientation="h",
@@ -876,26 +897,21 @@ def resolver(
 
 
 @app.callback(
-    Output({"type": "mapa-conductor", "index": MATCH}, "children"),
+    Output({"type": "mapa-conductor-graph", "index": MATCH}, "figure"),
     Input({"type": "conductor", "index": MATCH}, "open"),
-    Input("filtro-trayecto", "value"),
+    Input({"type": "filtro-conductor", "index": MATCH}, "value"),
     *[State(s, "value") for s in SLIDERS],
 )
-def mapa_conductor(abierto, filtro_trayecto, *valores):
+def mapa_conductor(abierto, filtro_conductor, *valores):
     # Solo se monta el mapa del panel abierto: cada mapa es un contexto WebGL.
     if not abierto:
-        return None
+        return no_update
     sol = resolver(*valores)
     i = ctx.outputs_list["id"]["index"]
     if i >= len(sol.rutas):
-        return None
-    return dcc.Graph(
-        figure=construir_mapa_conductor(
-            INSTANCIA, i, sol.rutas[i], filtro_trayecto
-        ),
-        config={"displayModeBar": False, "scrollZoom": True},
-        responsive=True,
-        style={"height": "360px"},
+        return no_update
+    return construir_mapa_conductor(
+        INSTANCIA, i, sol.rutas[i], filtro_conductor
     )
 
 
@@ -931,6 +947,25 @@ def actualizar(
     paneles_abiertos,
     paneles_ids,
 ):
+    if ctx.triggered_id == "filtro-trayecto":
+        sol = resolver(
+            capacidad,
+            vehiculos,
+            demanda,
+            jornada,
+            velocidad,
+            servicio,
+            costo,
+            costo_fijo,
+            penalizacion,
+        )
+        return (
+            construir_mapa(INSTANCIA, sol, filtro_trayecto),
+            no_update,
+            no_update,
+            no_update,
+        )
+
     sol = resolver(
         capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion
     )
