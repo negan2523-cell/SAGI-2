@@ -101,11 +101,15 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
 
     try:
 # --- BLINDAJE DINÁMICO ANTI-BLOQUEO ---
-        # 1. Forzar el uso del servidor de Francia (totalmente independiente del alemán)
+        # --- BLINDAJE DINÁMICO ANTI-BLOQUEO ---
+        # 1. Forzar el uso del servidor de Francia
         ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api"
-        # 2. Disfrazar el servidor de Render como un navegador web humano (Google Chrome)
-        ox.settings.requests_kwargs = {'headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}}
+        
+        # 2. Disfrazar el servidor correctamente usando SOLO http_headers
+        ox.settings.http_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}
+        
         ox.settings.timeout = 300
+        # -------------------------------------
         # -------------------------------------
         
         G_multi = ox.graph_from_bbox(
