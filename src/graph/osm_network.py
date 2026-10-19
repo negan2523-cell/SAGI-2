@@ -7,15 +7,6 @@ from dataclasses import dataclass, field
 
 import networkx as nx
 import osmnx as ox
-
-# --- CONFIGURACIÓN ANTI-BLOQUEO PARA RENDER ---
-# 1. Usar un servidor espejo oficial menos saturado
-ox.settings.overpass_endpoint = "https://overpass.kumi.systems/api"
-# 2. Identificar tu aplicación (Vital: evita que OSM te clasifique como bot)
-ox.settings.http_headers = {'User-Agent': 'SaaS_Logistico_Suba_Demo/1.0'}
-# 3. Extender el tiempo de espera para servidores gratuitos
-ox.settings.timeout = 200
-# ----------------------------------------------
 import pandas as pd
 
 
@@ -96,30 +87,24 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     bbox_east = max_lon + buffer_lon
     bbox_west = min_lon - buffer_lon
 
-    ox.settings.requests_timeout = 30
+    # --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
     ox.settings.log_console = False
+    ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api"
+    ox.settings.http_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}
+    ox.settings.timeout = 300
 
     try:
-# --- BLINDAJE DINÁMICO ANTI-BLOQUEO ---
-        # --- BLINDAJE DINÁMICO ANTI-BLOQUEO ---
-        # 1. Forzar el uso del servidor de Francia
-        ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api"
-        
-        # 2. Disfrazar el servidor correctamente usando SOLO http_headers
-        ox.settings.http_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}
-        
-        ox.settings.timeout = 300
-        # -------------------------------------
-        # -------------------------------------
-        
         G_multi = ox.graph_from_bbox(
-            (bbox_north, bbox_south, bbox_east, bbox_west),
+            bbox=(bbox_north, bbox_south, bbox_east, bbox_west),
             network_type='drive'
         )
-        # Transformación crítica a DiGraph simple para aliviar memoria
         G = ox.utils_graph.get_digraph(G_multi, weight='length')
-    except Exception as e:
-     raise RuntimeError(f"Error real de OSMnx: {str(e)}")
+    except Exception:
+        raise RuntimeError(
+            "El área cubierta por los puntos es demasiado extensa o la red "
+            "está saturada para el cálculo en tiempo real en este plan. "
+            "Por favor, intenta con una zona más concentrada."
+        )
 
     for n, data in G.nodes(data=True):
         data['lat'] = data.get('y', 0.0)
@@ -136,15 +121,13 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     depot = nodos_proyectados[0]
     clientes = nodos_proyectados[1:]
 
-    # Asignación de demanda de forma vectorizada
     demandas_array = df['demanda'].astype(float).values
     demanda: dict[int, float] = {depot: 0.0}
     
     for i, nodo_cliente in enumerate(clientes):
-        # Mapeamos desde el índice 1 del array de entrada
         demanda[nodo_cliente] = demandas_array[i + 1]
 
-    # --- MATRIZ DE DISTANCIAS OPTIMIZADA ---
+    # --- MATRIZ DE DISTANCIAS OPTIMIZADA (DIJKSTRA O(N)) ---
     ids_activos = [depot] + clientes
     n_puntos = len(ids_activos)
     
@@ -152,19 +135,22 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     caminos: dict[tuple[int, int], list[int]] = {}
 
     for i, origen in enumerate(ids_activos):
+        # El algoritmo se ejecuta una sola vez por nodo origen buscando todas las rutas posibles
+        try:
+            dist_dict, path_dict = nx.single_source_dijkstra(G, origen, weight='length')
+        except nx.NetworkXNoPath:
+            dist_dict, path_dict = {}, {}
+            
         for j, destino in enumerate(ids_activos):
             if i == j:
                 continue
             
-            try:
-                # Extracción unificada de camino y distancia mitigando el doble cálculo
-                dist, path = nx.single_source_dijkstra(G, origen, target=destino, weight='length')
-            except nx.NetworkXNoPath:
-                path = []
-                dist = 999999.0
-                
-            matriz_m[i][j] = float(dist)
-            caminos[(origen, destino)] = path
+            if destino in dist_dict:
+                matriz_m[i][j] = float(dist_dict[destino])
+                caminos[(origen, destino)] = path_dict[destino]
+            else:
+                matriz_m[i][j] = 999999.0
+                caminos[(origen, destino)] = []
 
     return InstanciaVRP(
         grafo=G,
