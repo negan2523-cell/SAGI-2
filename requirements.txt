@@ -5,3 +5,4 @@ numpy>=2.0
 pandas>=2.2
 requests>=2.32
 dash-extensions>=1.0.0
+osmnx>=1.8
