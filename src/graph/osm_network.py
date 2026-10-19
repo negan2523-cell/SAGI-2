@@ -98,12 +98,8 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
         )
         # Transformación crítica a DiGraph simple para aliviar memoria
         G = ox.utils_graph.get_digraph(G_multi, weight='length')
-    except Exception:
-        raise RuntimeError(
-            "El área cubierta por los puntos es demasiado extensa o la red "
-            "está saturada para el cálculo en tiempo real en este plan. "
-            "Por favor, intenta con una zona más concentrada."
-        )
+    except Exception as e:
+     raise RuntimeError(f"Error real de OSMnx: {str(e)}")
 
     for n, data in G.nodes(data=True):
         data['lat'] = data.get('y', 0.0)
