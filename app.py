@@ -15,8 +15,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.graph_objects as go
 from dash import ALL, MATCH, Input, Output, State, ctx, dcc, html, no_update
-from dash_extensions.enrich import DashProxy, ServersideOutputTransform, ServersideOutput, FileSystemStore
-
+from dash_extensions.enrich import DashProxy, ServersideOutputTransform, Serverside, FileSystemBackend
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -40,8 +39,7 @@ COLORES = [
 ]
 
 # Configuración de almacenamiento para despliegues en la nube (Render usa /tmp efímero pero estable por instancia)
-fs_store = FileSystemStore(cache_dir="/tmp/dash_cache")
-
+fs_store = FileSystemBackend(cache_dir="/tmp/dash_cache")
 app = DashProxy(__name__, transforms=[ServersideOutputTransform(backends=[fs_store])])
 app.title = "SAGI · Residuos Suba"
 
