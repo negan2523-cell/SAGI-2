@@ -95,7 +95,7 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
 
     try:
         G_multi = ox.graph_from_bbox(
-            bbox=(bbox_north, bbox_south, bbox_east, bbox_west),
+            bbox=(bbox_west, bbox_south, bbox_east, bbox_north),
             network_type='drive'
         )
         G = ox.utils_graph.get_digraph(G_multi, weight='length')
