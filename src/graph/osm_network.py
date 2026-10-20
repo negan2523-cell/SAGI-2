@@ -87,38 +87,40 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     bbox_east = max_lon + buffer_lon
     bbox_west = min_lon - buffer_lon
 
-# --- CONFIGURACIÓN ESTRICTA DE RED OSMNX 1.8 ---
-    ox.settings.log_console = False
-    ox.settings.overpass_endpoint = "https://maps.mail.ru/osm/tools/overpass/api"
-    ox.settings.http_headers = {'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'}
-    ox.settings.timeout = 300
+# --- CONFIGURACIÓN ESTRICTA DE RED OSMNX (SOPORTE MULTI-VERSIÓN) ---
+    espejo = "https://overpass.kumi.systems/api" # Servidor suizo de alta tolerancia a nubes
+    
+    # 1. En OSMnx 1.x, es OBLIGATORIO usar ox.config() para que el motor interno cambie de servidor.
+    if hasattr(ox, 'config'):
+        ox.config(
+            log_console=False,
+            overpass_endpoint=espejo,
+            http_headers={'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'},
+            timeout=300
+        )
+    else:
+        # Para versiones modernas (OSMnx 2.0+)
+        ox.settings.log_console = False
+        ox.settings.overpass_url = espejo
+        ox.settings.http_headers = {'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'}
+        ox.settings.timeout = 300
 
     try:
-        G_multi = ox.graph_from_bbox(
-            bbox=(bbox_west, bbox_south, bbox_east, bbox_north),
-            network_type='drive'
-        )
+        # 2. Detectar la versión instalada en Render para enviar las coordenadas en el orden que exige cada versión
+        version_mayor = int(ox.__version__.split('.')[0]) if hasattr(ox, '__version__') else 1
         
-        # Importación explícita obligatoria para OSMnx 1.8
-        from osmnx import utils_graph
-        G = utils_graph.get_digraph(G_multi, weight='length')
+        if version_mayor >= 2:
+            # Formato estricto para OSMnx 2.0+ (Tupla Bbox: Left, Bottom, Right, Top)
+            G_multi = ox.graph_from_bbox(bbox=(bbox_west, bbox_south, bbox_east, bbox_north), network_type='drive')
+            G = ox.convert.to_digraph(G_multi, weight='length')
+        else:
+            # Formato estricto para OSMnx 1.x (Parámetros nombrados explícitamente para evitar inversión de mapa)
+            G_multi = ox.graph_from_bbox(north=bbox_north, south=bbox_south, east=bbox_east, west=bbox_west, network_type='drive')
+            from osmnx import utils_graph
+            G = utils_graph.get_digraph(G_multi, weight='length')
             
     except Exception as e:
-        raise RuntimeError(
-            f"Fallo técnico al procesar el mapa en OSMnx 1.8. Detalle del error: {str(e)}"
-        )
-    try:
-        G_multi = ox.graph_from_bbox(
-            bbox=(bbox_west, bbox_south, bbox_east, bbox_north),
-            network_type='drive'
-        )
-        G = ox.utils_graph.get_digraph(G_multi, weight='length')
-    except Exception:
-        raise RuntimeError(
-            "El área cubierta por los puntos es demasiado extensa o la red "
-            "está saturada para el cálculo en tiempo real en este plan. "
-            "Por favor, intenta con una zona más concentrada."
-        )
+        raise RuntimeError(f"Fallo técnico al procesar el mapa. Detalle: {str(e)}")
 
     for n, data in G.nodes(data=True):
         data['lat'] = data.get('y', 0.0)
