@@ -87,10 +87,10 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     bbox_east = max_lon + buffer_lon
     bbox_west = min_lon - buffer_lon
 
-    # --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
+# --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
     ox.settings.log_console = False
-    ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api"
-    ox.settings.http_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'}
+    # ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api"
+    ox.settings.http_headers = {'User-Agent': 'Mozilla/5.0 ...'}
     ox.settings.timeout = 300
 
     try:
