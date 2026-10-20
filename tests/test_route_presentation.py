@@ -91,6 +91,24 @@ class RoutePresentationTests(unittest.TestCase):
         self.assertEqual(outbound.layout.map.zoom, 18)
         self.assertEqual(tuple(all_paths.data[5].lat), (inst.coords(0)[0],))
 
+    def test_initial_mobile_view_contains_the_entire_street_geometry(self):
+        import app
+        from src.routing.vrp import Ruta
+        osrm._tabla.cache_clear()
+        osrm._geometrias.cache_clear()
+        with patch.object(osrm, '_consultar', side_effect=[tabla(), ruta()]):
+            inst = osrm.cargar_instancia(puntos())
+            route = Ruta(clientes=[1, 2], carga_kg=300, distancia_m=700, tiempo_min=20)
+            fig = app.construir_mapa_conductor(inst, 0, route, viewport={"width": 390})
+        width, height = app._tamano_mapa({"width": 390}, conductor=True)
+        center = project(fig.layout.map.center.lat, fig.layout.map.center.lon, fig.layout.map.zoom)
+        for trace in fig.data[:2]:
+            for lat, lon in zip(trace.lat, trace.lon):
+                if lat is not None:
+                    x, y = project(lat, lon, fig.layout.map.zoom)
+                    self.assertLess(abs(x - center[0]), width / 2)
+                    self.assertLess(abs(y - center[1]), height / 2)
+
     def test_new_scenario_clears_session_and_upload(self):
         import app
         self.assertEqual(app.nuevo_escenario(1), (None, None))

@@ -17,3 +17,14 @@ document.addEventListener("click", (event) => {
   const input = document.querySelector('#upload-data input[type="file"]');
   if (input) input.value = "";
 });
+
+// Guardar dimensiones para encuadrar nuevas rutas según el espacio disponible.
+let viewportTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(viewportTimer);
+  viewportTimer = setTimeout(() => {
+    if (window.dash_clientside?.set_props) {
+      window.dash_clientside.set_props("viewport", {data: {width: window.innerWidth, height: window.innerHeight}});
+    }
+  }, 150);
+});

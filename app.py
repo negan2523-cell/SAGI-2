@@ -212,6 +212,21 @@ def construir_conductores(inst, sol: Solucion, abiertos: set[int], **params) -> 
     return hijos
 
 
+def _tamano_mapa(viewport=None, *, conductor=False):
+    width = (viewport or {}).get("width", 1440)
+    if width <= 560:
+        available = width - 34
+    elif width <= 900:
+        available = width - 50
+    elif width <= 1200:
+        available = width - 316
+    else:
+        available = min(width, 1600) - 382
+    if conductor:
+        available -= 40 + (270 if width > 1200 else 0)
+    return max(220, available), 360 if conductor else (400 if width <= 560 else 520)
+
+
 def _encuadre(lats: list[float], lons: list[float], ancho_px: float, alto_px: float) -> tuple[dict, float]:
     points = [project(lat, lon, 0) for lat, lon in zip(lats, lons)]
     xs, ys = zip(*points)
@@ -300,7 +315,7 @@ def _geometria_nodos(inst, nodos: list[int]) -> tuple[list[float | None], list[f
     return lats, lons
 
 
-def construir_mapa_conductor(inst, i: int, ruta: Ruta, filtro_trayecto: str = "ambos", zoom_actual: float | None = None) -> go.Figure:
+def construir_mapa_conductor(inst, i: int, ruta: Ruta, filtro_trayecto: str = "ambos", zoom_actual: float | None = None, viewport=None) -> go.Figure:
     color = COLORES[i % len(COLORES)]
     (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(inst, ruta)
     numero = {c: k + 1 for k, c in enumerate(inst.clientes)}
@@ -311,7 +326,7 @@ def construir_mapa_conductor(inst, i: int, ruta: Ruta, filtro_trayecto: str = "a
     mostrar_vuelta = filtro_trayecto in {"vuelta", "ambos"}
     centro, zoom = _encuadre(
         [lat for path in (ida_lats, vuelta_lats) for lat in path if lat is not None] + [dlat],
-        [lon for path in (ida_lons, vuelta_lons) for lon in path if lon is not None] + [dlon], 480, 360)
+        [lon for path in (ida_lons, vuelta_lons) for lon in path if lon is not None] + [dlon], *_tamano_mapa(viewport, conductor=True))
     zoom_flechas = zoom if zoom_actual is None else zoom_actual
     paths = [(ida_lats, ida_lons) if mostrar_ida else ([], []),
              (vuelta_lats, vuelta_lons) if mostrar_vuelta else ([], [])]
@@ -328,15 +343,17 @@ def construir_mapa_conductor(inst, i: int, ruta: Ruta, filtro_trayecto: str = "a
         go.Scattermap(lat=plat, lon=plon, mode="markers+text", marker={"size": 18, "color": color}, text=[str(k + 1) for k in range(len(ruta.clientes))], textfont={"color": "white", "size": 11}, customdata=[numero.get(c, "?") for c in ruta.clientes], hovertemplate="Parada %{text} · Punto %{customdata}<extra></extra>"),
         go.Scattermap(lat=[dlat], lon=[dlon], mode="markers", marker={"size": 16, "color": "#e9c46a"}, hovertemplate="Patio<extra></extra>"),
     ])
-    centro, zoom = _encuadre([lat for trayecto_lats in (ida_lats, vuelta_lats) for lat in trayecto_lats if lat is not None] + [dlat], [lon for trayecto_lons in (ida_lons, vuelta_lons) for lon in trayecto_lons if lon is not None] + [dlon], 480, 360)
     fig.update_layout(margin={"l": 0, "r": 0, "t": 0, "b": 0}, showlegend=False, map={"style": "carto-positron", "center": centro, "zoom": zoom_flechas, "uirevision": "constante"}, autosize=True, uirevision=f"conductor-{i}-{ruta.clientes}")
     return fig
 
 
-def construir_mapa(inst, sol: Solucion, filtro_trayecto: str = "ambos") -> go.Figure:
+def construir_mapa(inst, sol: Solucion, filtro_trayecto: str = "ambos", viewport=None) -> go.Figure:
     fig = go.Figure()
+    route_lats, route_lons = [], []
     for i, ruta in enumerate(sol.rutas):
         (ida_lats, ida_lons), (vuelta_lats, vuelta_lons) = _geometria_ruta(inst, ruta)
+        route_lats.extend(lat for lat in ida_lats + vuelta_lats if lat is not None)
+        route_lons.extend(lon for lon in ida_lons + vuelta_lons if lon is not None)
         color = COLORES[i % len(COLORES)]
         fig.add_traces([
             go.Scattermap(lat=ida_lats, lon=ida_lons, mode="lines", line=dict(width=3.2, color=color), name=f"Ruta {i + 1} · ida", visible=filtro_trayecto in {"ida", "ambos"}, hoverinfo="name"),
@@ -352,7 +369,7 @@ def construir_mapa(inst, sol: Solucion, filtro_trayecto: str = "ambos") -> go.Fi
         fig.add_trace(go.Scattermap(lat=ulat, lon=ulon, mode="markers", marker=dict(size=11, color="#c1121f"), name="No cubiertos"))
     dlat, dlon = inst.coords(inst.depot)
     fig.add_trace(go.Scattermap(lat=[dlat], lon=[dlon], mode="markers", marker=dict(size=16, color="#e9c46a"), name="Patio", text=["Patio de operaciones"], hovertemplate="%{text}<extra></extra>"))
-    centro, zoom = _encuadre(clat + [dlat], clon + [dlon], 1000, 720)
+    centro, zoom = _encuadre(route_lats + clat + [dlat], route_lons + clon + [dlon], *_tamano_mapa(viewport))
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), map=dict(style="carto-positron", center=centro, zoom=zoom, uirevision="constante"), legend=dict(orientation="h", yanchor="bottom", y=0.01, x=0.01, bgcolor="rgba(255,255,255,0.85)"), autosize=True, uirevision="mapa")
     return fig
 
@@ -522,6 +539,7 @@ layout_dashboard = html.Div(
 # Store de sesión en la raíz con pantalla de carga inmersiva durante la construcción del grafo
 app.layout = html.Div([
     dcc.Location(id="url_redirect", refresh=True),
+    dcc.Store(id="viewport"),
     dcc.Loading(
         id="loading-instancia",
         type="cube",
@@ -531,6 +549,12 @@ app.layout = html.Div([
     layout_ingesta,
     layout_dashboard,
 ])
+
+app.clientside_callback(
+    "function(path) { return {width: window.innerWidth, height: window.innerHeight}; }",
+    Output("viewport", "data"), Input("url_redirect", "pathname"),
+)
+
 
 @app.callback(
     Output("store-instancia", "data", allow_duplicate=True),
@@ -715,11 +739,12 @@ def confirmar_y_generar_instancia(n_clicks, contents, filename, col_id, col_lat,
     State("costo", "value"),
     State("costo_fijo", "value"),
     State("penalizacion", "value"),
+    State("viewport", "data"),
     prevent_initial_call=True
 )
 def mapa_conductor(
     abierto, filtro_conductor, relayout, inst,
-    capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion
+    capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion, viewport=None
 ):
     if not abierto or inst is None:
         return no_update
@@ -731,7 +756,7 @@ def mapa_conductor(
     if i >= len(sol.rutas):
         return no_update
     try:
-        return construir_mapa_conductor(inst, i, sol.rutas[i], filtro_conductor, (relayout or {}).get("map.zoom"))
+        return construir_mapa_conductor(inst, i, sol.rutas[i], filtro_conductor, (relayout or {}).get("map.zoom"), viewport)
     except RuntimeError as exc:
         CACHE_INSTANCIAS.pop(getattr(inst, "_session_id", None), None)
         figura = go.Figure()
@@ -759,10 +784,11 @@ def mapa_conductor(
     Input("filtro-trayecto", "value"),
     State({"type": "conductor", "index": ALL}, "open"),
     State({"type": "conductor", "index": ALL}, "id"),
+    State("viewport", "data"),
 )
 def actualizar(
     inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo,
-    penalizacion, filtro_trayecto, paneles_abiertos, paneles_ids,
+    penalizacion, filtro_trayecto, paneles_abiertos, paneles_ids, viewport=None,
 ):
     try:
         # Si no hay sesión activa o el caché expiró, mantiene visible la pantalla de carga sin bucles de recarga
@@ -771,7 +797,7 @@ def actualizar(
 
         if ctx.triggered_id == "filtro-trayecto":
             sol = resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
-            return construir_mapa(inst, sol, filtro_trayecto), no_update, no_update, no_update, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
+            return construir_mapa(inst, sol, filtro_trayecto, viewport), no_update, no_update, no_update, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
 
         sol = resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
         abiertos = {pid["index"] for pid, abierto in zip(paneles_ids or [], paneles_abiertos or []) if abierto}
@@ -793,7 +819,7 @@ def actualizar(
             velocidad=float(velocidad), servicio=float(servicio), demanda=float(demanda),
             costo_km=float(costo), costo_fijo=float(costo_fijo),
         )
-        return construir_mapa(inst, sol, filtro_trayecto), kpis, estado, conductores, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
+        return construir_mapa(inst, sol, filtro_trayecto, viewport), kpis, estado, conductores, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
     except RuntimeError as exc:
         CACHE_INSTANCIAS.pop(getattr(inst, "_session_id", None), None)
         return (no_update, no_update, html.P(str(exc), className="warn"), no_update,
