@@ -87,28 +87,25 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     bbox_east = max_lon + buffer_lon
     bbox_west = min_lon - buffer_lon
 
-# --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
-   # --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
+# --- CONFIGURACIÓN ESTRICTA DE RED OSMNX 1.8 ---
     ox.settings.log_console = False
-    
-    # Espejo público oficial alternativo para evadir bloqueos de IP en la nube
-    ox.settings.overpass_url = "https://maps.mail.ru/osm/tools/overpass/api"
-    
-    # (Agregamos 'overpass_endpoint' por compatibilidad si tu servidor Render instaló un osmnx antiguo)
     ox.settings.overpass_endpoint = "https://maps.mail.ru/osm/tools/overpass/api"
-    
     ox.settings.http_headers = {'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'}
     ox.settings.timeout = 300
-    
+
     try:
         G_multi = ox.graph_from_bbox(
             bbox=(bbox_west, bbox_south, bbox_east, bbox_north),
             network_type='drive'
         )
-        G = ox.utils_graph.get_digraph(G_multi, weight='length')
+        
+        # Importación explícita obligatoria para OSMnx 1.8
+        from osmnx import utils_graph
+        G = utils_graph.get_digraph(G_multi, weight='length')
+            
     except Exception as e:
         raise RuntimeError(
-            f"Fallo técnico al contactar OSMnx/Overpass. Detalle del error: {str(e)}"
+            f"Fallo técnico al procesar el mapa en OSMnx 1.8. Detalle del error: {str(e)}"
         )
     try:
         G_multi = ox.graph_from_bbox(
