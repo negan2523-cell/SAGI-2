@@ -88,10 +88,24 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     bbox_west = min_lon - buffer_lon
 
 # --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
+   # --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
     ox.settings.log_console = False
     # ox.settings.overpass_endpoint = "https://overpass.openstreetmap.fr/api"
-    ox.settings.http_headers = {'User-Agent': 'Mozilla/5.0 ...'}
+    # IMPORTANTE: No usar puntos suspensivos. Usar una firma real.
+    ox.settings.http_headers = {'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'}
     ox.settings.timeout = 300
+
+    try:
+        G_multi = ox.graph_from_bbox(
+            bbox=(bbox_west, bbox_south, bbox_east, bbox_north),
+            network_type='drive'
+        )
+        G = ox.utils_graph.get_digraph(G_multi, weight='length')
+    except Exception as e:
+        # AQUÍ QUITAMOS LA CEGUERA: Mostraremos el error exacto que arroja la librería
+        raise RuntimeError(
+            f"Fallo técnico al contactar OSMnx/Overpass. Detalle del error: {str(e)}"
+        )
 
     try:
         G_multi = ox.graph_from_bbox(
