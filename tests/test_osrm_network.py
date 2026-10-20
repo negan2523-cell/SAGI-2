@@ -143,6 +143,7 @@ class OSRMTests(unittest.TestCase):
 
     def test_csv_mapeo_solver_y_mapa_sin_llm(self):
         import app
+        self.assertTrue(app.app.config.suppress_callback_exceptions)
         contents = 'data:text/csv;base64,' + base64.b64encode(puntos().to_csv(index=False).encode()).decode()
         with patch.object(app.agente, 'preguntar') as preguntar:
             ui, aviso = app.procesar_archivo_llm(contents, 'puntos.csv')

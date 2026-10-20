@@ -57,7 +57,8 @@ ESTILO_DASHBOARD_VISIBLE = {"display": "block"}
 
 # Configuración de almacenamiento para despliegues en la nube (Render usa /tmp efímero pero estable por instancia)
 fs_store = FileSystemBackend(cache_dir="/tmp/dash_cache")
-app = DashProxy(__name__, transforms=[ServersideOutputTransform(backends=[fs_store])])
+app = DashProxy(__name__, suppress_callback_exceptions=True,
+                transforms=[ServersideOutputTransform(backends=[fs_store])])
 app.title = "SAGI · Residuos Suba"
 
 
