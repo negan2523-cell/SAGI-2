@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.graph_objects as go
 from dash import ALL, MATCH, Input, Output, State, ctx, dcc, html, no_update
-from dash_extensions.enrich import DashProxy, ServersideOutputTransform, ServersideOutput, FileSystemBackend
+from dash_extensions.enrich import DashProxy, ServersideOutputTransform, Serverside, FileSystemBackend
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -592,7 +592,7 @@ def confirmar_y_generar_instancia(n_clicks, contents, filename, col_id, col_lat,
         
     instancia_cliente._session_id = str(uuid.uuid4()) # ID único para recuperar el caché
     
-    return ServersideOutput(instancia_cliente), {"display": "none"}, {"display": "block"}, ""
+    return Serverside(instancia_cliente), {"display": "none"}, {"display": "block"}, ""
 @app.callback(
     Output({"type": "mapa-conductor-graph", "index": MATCH}, "figure"),
     Output("url_redirect", "pathname", allow_duplicate=True),
