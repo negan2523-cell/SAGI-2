@@ -18,7 +18,7 @@ from src.routing.vrp import Solucion, itinerario
 
 BASE_URL_POR_DEFECTO = "https://openrouter.ai/api/v1"
 MAX_MENSAJES_HISTORIAL = 12
-ARCHIVOS_CODIGO = ("src/routing/vrp.py", "src/graph/osm_network.py", "src/config.py")
+ARCHIVOS_CODIGO = ("src/routing/vrp.py", "src/graph/osrm_network.py", "src/graph/osm_network.py", "src/config.py")
 
 INSTRUCCIONES = (
     "Eres un asistente de operaciones de recolección de residuos para la localidad de Suba "
@@ -36,18 +36,17 @@ INSTRUCCIONES = (
 FICHA_TECNICA = """FICHA TÉCNICA DEL SIMULADOR
 - App web en Python (Dash + Plotly). Cada vez que se mueve un slider se vuelve a resolver el
   problema completo y se redibujan mapa, indicadores, conductores y sus mapas.
-- Red vial: calles reales de OpenStreetMap descargadas de Overpass para la extensión de
-  los puntos cargados, con margen de 500 m. El piloto admite un patio en la primera fila
-  y hasta 50 puntos, a un máximo de 15 km en línea recta desde el patio. Usa OSMnx 2 y un
-  grafo dirigido ponderado con networkx: nodos = intersecciones, aristas = tramos de calle,
-  peso = longitud en metros. Respeta sentidos viales; conserva la mayor componente
-  fuertemente conexa y rechaza puntos a más de 500 m de una vía disponible.
-- Cada arista conserva su geometría OSM y el mapa dibuja sus coordenadas, incluidos los
-  vértices intermedios de los LineStrings, en lugar de unir solo las paradas.
-- Instancia: patio, coordenadas y demandas proceden del archivo del usuario. Se calculan
-  caminos más cortos dirigidos con Dijkstra, una búsqueda por origen, hasta alcanzar los
-  demás puntos. Las distancias son por calle y pueden diferir de ida y vuelta. La sesión
-  solo conserva la unión de esos caminos; las descargas y sesiones usan cachés temporales.
+- Red vial: OSRM calcula una matriz dirigida de distancias y los recorridos por calles
+  usando datos de OpenStreetMap. El piloto admite un patio en la primera fila y hasta 50
+  puntos a 15 km en línea recta del patio. El ajuste a una vía se limita a 500 m.
+- OSRM usa su perfil de automóvil, que prioriza tiempo de viaje. Las distancias corresponden
+  a esos recorridos; no necesariamente minimizan distancia ni contemplan restricciones
+  específicas de un camión. Las distancias pueden ser distintas de ida y vuelta.
+- El motor local distribuye los puntos entre vehículos usando la matriz de OSRM. Solo se
+  descargan geometrías de las rutas elegidas, con sus vértices intermedios; no se descarga
+  un grafo de toda la ciudad ni se dibujan rutas ficticias si el proveedor falla.
+- Instancia: patio, coordenadas y demandas proceden del archivo del usuario. Las sesiones
+  guardan los puntos y los recorridos usados. Hay cachés acotadas de matrices y geometrías.
 - Ruteo: CVRP con límite de jornada (sin ventanas horarias por punto). Heurística de ahorros
   de Clarke-Wright en dos variantes (ahorro dirigido y clásico), mejora 2-opt por ruta y, si
   hay más rutas que vehículos, reinserción de los puntos sobrantes en rutas existentes. Se
@@ -110,7 +109,7 @@ def _hora(minutos_desde_salida: float) -> str:
 def contexto_escenario(inst: InstanciaVRP, sol: Solucion, p: dict) -> str:
     numero = {c: k + 1 for k, c in enumerate(inst.clientes)}
     lineas = [
-        f"Grafo vial cargado: {inst.grafo.number_of_nodes()} nodos, "
+        f"Red de rutas cargada: {inst.grafo.number_of_nodes()} nodos, "
         f"{inst.grafo.number_of_edges()} aristas dirigidas.",
         "",
         "PARÁMETROS DEL ESCENARIO",

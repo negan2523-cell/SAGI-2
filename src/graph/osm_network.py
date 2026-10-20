@@ -8,7 +8,6 @@ from heapq import heappop, heappush
 from threading import Lock
 
 import networkx as nx
-import osmnx as ox
 import pandas as pd
 import requests
 
@@ -57,6 +56,9 @@ class InstanciaVRP:
     def coords(self, nid: int) -> tuple[float, float]:
         return self.grafo.nodes[nid]["lat"], self.grafo.nodes[nid]["lon"]
 
+    def preparar_ruta(self, secuencia: list[int]) -> None:
+        """La instancia local ya contiene todos los caminos de su matriz."""
+
     def polyline(self, secuencia_nodos_logicos: list[int]) -> tuple[list[float], list[float]]:
         lats: list[float] = []
         lons: list[float] = []
@@ -103,6 +105,8 @@ def _validar_puntos(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _descargar_grafo(bbox: tuple[float, float, float, float]) -> nx.MultiDiGraph:
+    import osmnx as ox
+
     configuracion = {
         "log_console": False,
         "use_cache": True,

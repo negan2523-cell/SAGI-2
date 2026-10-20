@@ -36,7 +36,7 @@ from src.config import (
     SERVICIO_BASE_MIN,
     SUBA_CENTER,
 )
-from src.graph.osm_network import cargar_instancia
+from src.graph.osrm_network import cargar_instancia
 from src.routing.vrp import Ruta, Solucion, itinerario, resolver_vrp
 
 COLORES = [
@@ -226,6 +226,7 @@ def _encuadre(lats: list[float], lons: list[float], ancho_px: float, alto_px: fl
 def _nodos_ruta(inst, ruta: Ruta) -> list[int]:
     nodos: list[int] = []
     secuencia = [inst.depot, *ruta.clientes, inst.depot]
+    inst.preparar_ruta(secuencia)
     for a, b in zip(secuencia, secuencia[1:]):
         camino = inst.caminos.get((a, b))
         if not camino:
@@ -397,8 +398,9 @@ def construir_mapa(inst, sol: Solucion, filtro_trayecto: str = "ambos") -> go.Fi
         ulon = [inst.coords(c)[1] for c in sol.no_cubiertos]
         fig.add_trace(go.Scattermap(lat=ulat, lon=ulon, mode="markers", marker=dict(size=11, color="#c1121f"), name="No cubiertos"))
     dlat, dlon = inst.coords(inst.depot)
-    fig.add_trace(go.Scattermap(lat=[dlat], lon=[dlon], mode="markers", marker=dict(size=16, color="#e9c46a"), name="Patio", text=["Patio de operaciones (Suba)"], hovertemplate="%{text}<extra></extra>"))
-    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), map=dict(style="open-street-map", center=dict(lat=SUBA_CENTER[0], lon=SUBA_CENTER[1]), zoom=13.1, uirevision="constante"), legend=dict(orientation="h", yanchor="bottom", y=0.01, x=0.01, bgcolor="rgba(255,255,255,0.85)"), autosize=True, uirevision="mapa")
+    fig.add_trace(go.Scattermap(lat=[dlat], lon=[dlon], mode="markers", marker=dict(size=16, color="#e9c46a"), name="Patio", text=["Patio de operaciones"], hovertemplate="%{text}<extra></extra>"))
+    centro, zoom = _encuadre(clat + [dlat], clon + [dlon], 1000, 720)
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), map=dict(style="open-street-map", center=centro, zoom=zoom, uirevision="constante"), legend=dict(orientation="h", yanchor="bottom", y=0.01, x=0.01, bgcolor="rgba(255,255,255,0.85)"), autosize=True, uirevision="mapa")
     return fig
 
 
@@ -445,6 +447,7 @@ layout_ingesta = html.Div(
     style=ESTILO_UPLOAD_VISIBLE,
     children=[
         html.H1("Configuración del Escenario Base (Carga de Puntos)"),
+        html.P("Piloto: primera fila = patio; hasta 50 puntos a 15 km del patio. Rutas calculadas con OSRM."),
         dcc.Upload(
             id="upload-data",
             children=html.Div(["Arrastra o haz clic para subir tu CSV / Excel con puntos de recolección"]),
@@ -608,25 +611,30 @@ def procesar_archivo_llm(contents, filename):
         f"{df.head(3).to_csv(index=False)}"
     )
 
-    try:
-        historial = [{"role": "user", "content": prompt_mapeo}]
-        respuesta_llm = agente.preguntar(historial, "")
-        texto_json = respuesta_llm.replace("```json", "").replace("```", "").strip()
-        mapeo_sugerido = json.loads(texto_json)
-        columnas = df.columns.tolist()
+    columnas = df.columns.tolist()
+    normalizadas = {str(col).strip().casefold(): col for col in columnas}
+    mapeo_sugerido = {campo: normalizadas.get(campo) for campo in ("id_punto", "latitud", "longitud", "demanda")}
+    aviso = ""
+    if not (mapeo_sugerido["latitud"] and mapeo_sugerido["longitud"]):
+        try:
+            respuesta_llm = agente.preguntar([{"role": "user", "content": prompt_mapeo}], "")
+            texto_json = respuesta_llm.replace("```json", "").replace("```", "").strip()
+            sugerencia = json.loads(texto_json)
+            if not isinstance(sugerencia, dict):
+                raise ValueError("Mapeo inválido")
+            mapeo_sugerido = {campo: col if col in columnas else None for campo, col in sugerencia.items()}
+        except Exception:
+            aviso = "Selecciona las columnas de tu archivo para continuar."
 
-        ui_mapeo = html.Div([
-            html.H3("Confirma las columnas detectadas por la IA:"),
-            html.Div([html.Label("ID Punto: "), dcc.Dropdown(id="drop-id", options=columnas, value=mapeo_sugerido.get("id_punto"))]),
-            html.Div([html.Label("Latitud: "), dcc.Dropdown(id="drop-lat", options=columnas, value=mapeo_sugerido.get("latitud"))]),
-            html.Div([html.Label("Longitud: "), dcc.Dropdown(id="drop-lon", options=columnas, value=mapeo_sugerido.get("longitud"))]),
-            html.Div([html.Label("Demanda (kg): "), dcc.Dropdown(id="drop-dem", options=columnas, value=mapeo_sugerido.get("demanda"))]),
-            html.Button("Confirmar Mapeo y Generar Mapa", id="btn-confirmar", style={"marginTop": "20px"}),
-        ], style={"textAlign": "left", "maxWidth": "400px", "margin": "0 auto"})
-
-        return ui_mapeo, ""
-    except Exception:
-        return None, "Error en la validación del agente. Asegúrate de que el archivo contiene datos de geolocalización claros."
+    ui_mapeo = html.Div([
+        html.H3("Confirma las columnas del archivo:"),
+        html.Div([html.Label("ID Punto: "), dcc.Dropdown(id="drop-id", options=columnas, value=mapeo_sugerido.get("id_punto"))]),
+        html.Div([html.Label("Latitud: "), dcc.Dropdown(id="drop-lat", options=columnas, value=mapeo_sugerido.get("latitud"))]),
+        html.Div([html.Label("Longitud: "), dcc.Dropdown(id="drop-lon", options=columnas, value=mapeo_sugerido.get("longitud"))]),
+        html.Div([html.Label("Demanda (kg): "), dcc.Dropdown(id="drop-dem", options=columnas, value=mapeo_sugerido.get("demanda"))]),
+        html.Button("Confirmar Mapeo y Generar Mapa", id="btn-confirmar", style={"marginTop": "20px"}),
+    ], style={"textAlign": "left", "maxWidth": "400px", "margin": "0 auto"})
+    return ui_mapeo, aviso
 
 
 @app.callback(
@@ -726,7 +734,13 @@ def mapa_conductor(
     i = ctx.triggered_id["index"] if isinstance(ctx.triggered_id, dict) else ctx.outputs_list["id"]["index"]
     if i >= len(sol.rutas):
         return no_update
-    return construir_mapa_conductor(inst, i, sol.rutas[i], filtro_conductor)
+    try:
+        return construir_mapa_conductor(inst, i, sol.rutas[i], filtro_conductor)
+    except RuntimeError as exc:
+        CACHE_INSTANCIAS.pop(getattr(inst, "_session_id", None), None)
+        figura = go.Figure()
+        figura.add_annotation(text=str(exc), showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper")
+        return figura
 
 
 @app.callback(
@@ -754,35 +768,40 @@ def actualizar(
     inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo,
     penalizacion, filtro_trayecto, paneles_abiertos, paneles_ids,
 ):
-    # Si no hay sesión activa o el caché expiró, mantiene visible la pantalla de carga sin bucles de recarga
-    if inst is None:
-        return no_update, no_update, no_update, no_update, ESTILO_UPLOAD_VISIBLE, ESTILO_OCULTO
+    try:
+        # Si no hay sesión activa o el caché expiró, mantiene visible la pantalla de carga sin bucles de recarga
+        if inst is None:
+            return no_update, no_update, no_update, no_update, ESTILO_UPLOAD_VISIBLE, ESTILO_OCULTO
 
-    if ctx.triggered_id == "filtro-trayecto":
+        if ctx.triggered_id == "filtro-trayecto":
+            sol = resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
+            return construir_mapa(inst, sol, filtro_trayecto), no_update, no_update, no_update, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
+
         sol = resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
-        return construir_mapa(inst, sol, filtro_trayecto), no_update, no_update, no_update, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
+        abiertos = {pid["index"] for pid, abierto in zip(paneles_ids or [], paneles_abiertos or []) if abierto}
+        kpis = [
+            _kpi("Costo total", _fmt_cop(sol.costo_cop), f"km {_fmt_cop(sol.costo_variable_cop)} · flota {_fmt_cop(sol.costo_fijo_cop)} · penalización {_fmt_cop(sol.penalizacion_cop)}"),
+            _kpi("Distancia", f"{sol.distancia_total_m / 1000:.1f} km", "rutas OSRM · datos OSM"),
+            _kpi("Horas-vehículo", f"{sol.tiempo_total_min / 60:.1f} h", f"ruta más larga {sol.tiempo_max_ruta_min / 60:.1f} h"),
+            _kpi("Vehículos", f"{sol.vehiculos_usados} / {int(vehiculos)}", f"{sol.demanda_cubierta_kg:.0f} kg cubiertos"),
+            _kpi("No recogido", f"{sol.demanda_no_cubierta_kg:.0f} kg", f"{len(sol.no_cubiertos)} punto(s)"),
+        ]
+        if sol.factible:
+            estado = html.P("Escenario factible: toda la demanda cabe en capacidad, flota y jornada.", className="ok")
+        else:
+            n = len(sol.no_cubiertos)
+            estado = html.P(f"Escenario tensionado: {n} punto(s) quedan fuera. Sube capacidad, flota o jornada, o baja la demanda.", className="warn")
 
-    sol = resolver(inst, capacidad, vehiculos, demanda, jornada, velocidad, servicio, costo, costo_fijo, penalizacion)
-    abiertos = {pid["index"] for pid, abierto in zip(paneles_ids or [], paneles_abiertos or []) if abierto}
-    kpis = [
-        _kpi("Costo total", _fmt_cop(sol.costo_cop), f"km {_fmt_cop(sol.costo_variable_cop)} · flota {_fmt_cop(sol.costo_fijo_cop)} · penalización {_fmt_cop(sol.penalizacion_cop)}"),
-        _kpi("Distancia", f"{sol.distancia_total_m / 1000:.1f} km", "red vial OSM"),
-        _kpi("Horas-vehículo", f"{sol.tiempo_total_min / 60:.1f} h", f"ruta más larga {sol.tiempo_max_ruta_min / 60:.1f} h"),
-        _kpi("Vehículos", f"{sol.vehiculos_usados} / {int(vehiculos)}", f"{sol.demanda_cubierta_kg:.0f} kg cubiertos"),
-        _kpi("No recogido", f"{sol.demanda_no_cubierta_kg:.0f} kg", f"{len(sol.no_cubiertos)} punto(s)"),
-    ]
-    if sol.factible:
-        estado = html.P("Escenario factible: toda la demanda cabe en capacidad, flota y jornada.", className="ok")
-    else:
-        n = len(sol.no_cubiertos)
-        estado = html.P(f"Escenario tensionado: {n} punto(s) quedan fuera. Sube capacidad, flota o jornada, o baja la demanda.", className="warn")
-
-    conductores = construir_conductores(
-        inst, sol, abiertos, capacidad=float(capacidad), jornada_h=float(jornada),
-        velocidad=float(velocidad), servicio=float(servicio), demanda=float(demanda),
-        costo_km=float(costo), costo_fijo=float(costo_fijo),
-    )
-    return construir_mapa(inst, sol, filtro_trayecto), kpis, estado, conductores, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
+        conductores = construir_conductores(
+            inst, sol, abiertos, capacidad=float(capacidad), jornada_h=float(jornada),
+            velocidad=float(velocidad), servicio=float(servicio), demanda=float(demanda),
+            costo_km=float(costo), costo_fijo=float(costo_fijo),
+        )
+        return construir_mapa(inst, sol, filtro_trayecto), kpis, estado, conductores, ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE
+    except RuntimeError as exc:
+        CACHE_INSTANCIAS.pop(getattr(inst, "_session_id", None), None)
+        return (no_update, no_update, html.P(str(exc), className="warn"), no_update,
+                ESTILO_OCULTO, ESTILO_DASHBOARD_VISIBLE)
 
 
 @app.callback(

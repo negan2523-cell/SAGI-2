@@ -191,7 +191,8 @@ class RuteoTests(unittest.TestCase):
         csv = puntos().to_csv(index=False).encode()
         contenido = "data:text/csv;base64," + base64.b64encode(csv).decode()
         with patch.dict(app.CACHE_INSTANCIAS, {"otra": object()}, clear=True), \
-             patch.object(red, "_descargar_grafo", side_effect=lambda bbox: red_prueba()):
+             patch.object(red, "_descargar_grafo", side_effect=lambda bbox: red_prueba()), \
+             patch.object(app, "cargar_instancia", side_effect=red.cargar_instancia):
             resultado = app.confirmar_y_generar_instancia(
                 1, contenido, "piloto.csv", None, "latitud", "longitud", "demanda")
             instancia = resultado[0].value
