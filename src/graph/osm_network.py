@@ -86,57 +86,41 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
 
     bbox_north = max_lat + buffer_lat
     bbox_south = min_lat - buffer_lat
-    bbox_east = max_lon + buffer_lat
+    bbox_east = max_lon + buffer_lon  # Corregido: antes era buffer_lat
     bbox_west = min_lon - buffer_lon
 
     # --- CONFIGURACIÓN DE RED CON FAILOVER RÁPIDO Y CACHÉ EN DISCO ---
+    # Eliminado el servidor de mail.ru que ocasiona el timeout
     espejos = [
-        "https://maps.mail.ru/osm/tools/overpass/api",
         "https://overpass-api.de/api",
         "https://overpass.kumi.systems/api",
     ]
 
     G: nx.DiGraph | None = None
     ultimo_error = ""
-    version_mayor = int(ox.__version__.split(".")[0]) if hasattr(ox, "__version__") else 1
 
     for espejo in espejos:
         try:
-            # Timeout de 25s por espejo para permitir conmutación rápida antes del corte HTTP de Render
-            if hasattr(ox, "config"):
-                ox.config(
-                    log_console=False,
-                    use_cache=True,
-                    cache_folder="/tmp/osmnx_cache",
-                    overpass_endpoint=espejo,
-                    http_headers={"User-Agent": "SAGI-Suba-App/1.0 (negan2523@gmail.com)"},
-                    timeout=25,
-                )
-            else:
-                ox.settings.log_console = False
-                ox.settings.use_cache = True
-                ox.settings.cache_folder = "/tmp/osmnx_cache"
-                ox.settings.overpass_url = espejo
-                ox.settings.http_headers = {"User-Agent": "SAGI-Suba-App/1.0 (negan2523@gmail.com)"}
-                ox.settings.timeout = 25
-                ox.settings.requests_timeout = 25
+            # Configuración específica y obligatoria para OSMnx 1.8+
+            ox.settings.log_console = False
+            ox.settings.use_cache = True
+            ox.settings.cache_folder = "/tmp/osmnx_cache"
+            ox.settings.overpass_endpoint = espejo
+            ox.settings.overpass_rate_limit = False  # Crítico: evita pausas forzadas que agotan el timeout
+            ox.settings.http_headers = {"User-Agent": "SAGI-Suba-App/1.0 (negan2523@gmail.com)"}
+            ox.settings.timeout = 25
+            ox.settings.requests_timeout = 25
 
-            if version_mayor >= 2:
-                G_multi = ox.graph_from_bbox(
-                    bbox=(bbox_west, bbox_south, bbox_east, bbox_north),
-                    network_type="drive",
-                )
-                G_candidato = ox.convert.to_digraph(G_multi, weight="length")
-            else:
-                G_multi = ox.graph_from_bbox(
-                    north=bbox_north,
-                    south=bbox_south,
-                    east=bbox_east,
-                    west=bbox_west,
-                    network_type="drive",
-                )
-                from osmnx import utils_graph
-                G_candidato = utils_graph.get_digraph(G_multi, weight="length")
+            G_multi = ox.graph_from_bbox(
+                north=bbox_north,
+                south=bbox_south,
+                east=bbox_east,
+                west=bbox_west,
+                network_type="drive",
+                simplify=True,
+            )
+            from osmnx import utils_graph
+            G_candidato = utils_graph.get_digraph(G_multi, weight="length")
 
             if G_candidato is not None and len(G_candidato) > 0:
                 G = G_candidato
@@ -164,23 +148,23 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
         data["lon"] = lon_n
         coords_grafo.append((n, lat_n, lon_n))
 
-    # --- IDENTIFICACIÓN (SNAPPING) SIN SCIKIT-LEARN Y SIN COLISIÓN DE NODOS ---
+    # --- IDENTIFICACIÓN (SNAPPING) EN O(V) SIN ORDENAR TODO EL GRAFO ---
     nodos_proyectados: list[int] = []
     nodos_usados: set[int] = set()
 
     lats = df["latitud"].astype(float).tolist()
     lons = df["longitud"].astype(float).tolist()
+    # Precalculamos el factor cos_lat para acelerar el cálculo de distancia pseudo-euclidiana
+    cos_lat = math.cos(math.radians(lats[0]))
 
     for lat_punto, lon_punto in zip(lats, lons):
-        candidatos_ordenados = sorted(
-            coords_grafo,
-            key=lambda nodo: _haversine_m(lat_punto, lon_punto, nodo[1], nodo[2]),
+        # En lugar de sort(), usamos min() con fórmula de distancia plana para no sobrecargar CPU
+        candidato = min(
+            (n for n in coords_grafo if n[0] not in nodos_usados),
+            key=lambda n: (lat_punto - n[1]) ** 2 + ((lon_punto - n[2]) * cos_lat) ** 2,
+            default=coords_grafo[0],
         )
-        nodo_elegido = candidatos_ordenados[0][0]
-        for cand_id, _, _ in candidatos_ordenados:
-            if cand_id not in nodos_usados:
-                nodo_elegido = cand_id
-                break
+        nodo_elegido = candidato[0]
         nodos_proyectados.append(nodo_elegido)
         nodos_usados.add(nodo_elegido)
 
@@ -194,7 +178,7 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     for i, nodo_cliente in enumerate(clientes):
         demanda[nodo_cliente] = float(demandas_array[i + 1])
 
-    # --- MATRIZ DE DISTANCIAS OPTIMIZADA (DIJKSTRA UNIFICADO) ---
+    # --- MATRIZ DE DISTANCIAS LIGERA (SOLO RECONSTRUYE CAMINOS ACTIVOS) ---
     ids_activos = [depot, *clientes]
     n_puntos = len(ids_activos)
 
@@ -203,9 +187,10 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
 
     for i, origen in enumerate(ids_activos):
         try:
-            dist_dict, path_dict = nx.single_source_dijkstra(G, origen, weight="length")
+            # Dijkstra ligero: retorna diccionario de distancias y diccionario de predecesores
+            pred, dist_dict = nx.dijkstra_predecessor_and_distance(G, origen, weight="length")
         except nx.NetworkXNoPath:
-            dist_dict, path_dict = {}, {}
+            pred, dist_dict = {}, {}
 
         for j, destino in enumerate(ids_activos):
             if i == j:
@@ -213,7 +198,15 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
 
             if destino in dist_dict:
                 matriz_m[i][j] = float(dist_dict[destino])
-                caminos[(origen, destino)] = path_dict[destino]
+                
+                # Reconstruir camino de forma rápida navegando hacia atrás
+                camino = [destino]
+                actual = destino
+                while actual != origen and pred.get(actual):
+                    actual = pred[actual][0]
+                    camino.append(actual)
+                camino.reverse()
+                caminos[(origen, destino)] = camino
             else:
                 matriz_m[i][j] = 999999.0
                 caminos[(origen, destino)] = []
