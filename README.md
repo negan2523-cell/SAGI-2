@@ -77,3 +77,18 @@ variables en Render (la IA puede sugerir el mapeo de cabeceras no estándar):
 También se pueden definir como variables de entorno; estas tienen prioridad sobre `.env`.
 Cada pregunta envía al proveedor una ficha técnica del sistema, el resumen del escenario actual
 (parámetros, rutas y puntos) y, si está activado, el código del motor.
+
+## Interfaz y lectura de recorridos
+
+- La pantalla de carga explica el formato y permite revisar las columnas antes de generar
+  el plan. «Cargar otro archivo» limpia la sesión activa y vuelve a la carga.
+- El panel separa operación y costos avanzados, ofrece accesos a resumen, conductores y
+  asistente, y adapta tarjetas y tablas a pantallas pequeñas.
+- «Ida» incluye todas las paradas de recolección; «Regreso» empieza en la última parada
+  y termina en el patio. Los mapas conservan la geometría real de las calles.
+- En el detalle del conductor, las flechas se recalculan al cambiar el zoom: mantienen
+  tamaño en pantalla y separación entre sí y respecto a las paradas. Se omiten en tramos
+  recorridos en sentidos opuestos; los filtros «Solo ida» y «Solo regreso» permiten
+  inspeccionar cada trayecto. También se evitan flechas enfrentadas cuando la propia
+  recolección vuelve sobre una calle. El mapa general prioriza la lectura de toda la flota.
+- La base de mapa clara usa CARTO y datos de OpenStreetMap con atribución visible.
