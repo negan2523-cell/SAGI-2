@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.graph_objects as go
 from dash import ALL, MATCH, Input, Output, State, ctx, dcc, html, no_update
-from dash_extensions.enrich import DashProxy, ServersideOutputTransform, Serverside, FileSystemBackend
+from dash_extensions.enrich import DashProxy, ServersideOutputTransform, ServersideOutput, FileSystemBackend
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -577,11 +577,22 @@ def confirmar_y_generar_instancia(n_clicks, contents, filename, col_id, col_lat,
     except (ValueError, KeyError):
         return no_update, no_update, no_update, "Fallo Crítico: Las columnas seleccionadas no existen o no son numéricas flotantes."
     
-    instancia_cliente = cargar_instancia(df_renamed)
+    # --- CAPTURA DE EXCEPCIONES DE RED Y VALIDACIÓN ---
+    try:
+        instancia_cliente = cargar_instancia(df_renamed)
+    except ValueError as e:
+        # Captura la validación Pre-vuelo de los 25km (dispersión geográfica)
+        return no_update, no_update, no_update, f"Alerta de Geometría: {str(e)}"
+    except RuntimeError as e:
+        # Captura el fallo de descarga de OSMnx / Overpass
+        return no_update, no_update, no_update, f"Alerta de Red: {str(e)}"
+    except Exception as e:
+        # Captura cualquier fallo inesperado catastrófico
+        return no_update, no_update, no_update, f"Error Interno Inesperado: {str(e)}"
+        
     instancia_cliente._session_id = str(uuid.uuid4()) # ID único para recuperar el caché
     
-    return Serverside(instancia_cliente), {"display": "none"}, {"display": "block"}, ""
-
+    return ServersideOutput(instancia_cliente), {"display": "none"}, {"display": "block"}, ""
 @app.callback(
     Output({"type": "mapa-conductor-graph", "index": MATCH}, "figure"),
     Output("url_redirect", "pathname", allow_duplicate=True),
