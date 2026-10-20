@@ -139,12 +139,21 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
         data['lat'] = data.get('y', 0.0)
         data['lon'] = data.get('x', 0.0)
 
-    # --- IDENTIFICACIÓN (SNAPPING) DE NODOS ---
-    nodos_proyectados = ox.distance.nearest_nodes(
-        G,
-        X=df['longitud'].tolist(),
-        Y=df['latitud'].tolist()
-    )
+    # --- IDENTIFICACIÓN (SNAPPING) DE NODOS (LIGERO, SIN SCIKIT-LEARN) ---
+    nodos_proyectados = []
+    # Extraemos las coordenadas de todos los nodos de las calles descargadas
+    coords_grafo = [(n, data['lat'], data['lon']) for n, data in G.nodes(data=True)]
+    
+    lats = df['latitud'].tolist()
+    lons = df['longitud'].tolist()
+    
+    # Buscamos la intersección más cercana para cada punto de tu Excel
+    for lat_punto, lon_punto in zip(lats, lons):
+        nodo_mas_cercano = min(
+            coords_grafo, 
+            key=lambda nodo: _haversine_m(lat_punto, lon_punto, nodo[1], nodo[2])
+        )[0]
+        nodos_proyectados.append(nodo_mas_cercano)
 
     # --- ASIGNACIÓN HEURÍSTICA DE PUNTOS ---
     depot = nodos_proyectados[0]
