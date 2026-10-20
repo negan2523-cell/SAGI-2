@@ -10,13 +10,14 @@ INSTANCE_CACHE = DATA_DIR / "suba_instancia.json"
 # Núcleo urbano de Suba (Parque de Suba / centro de localidad).
 # Un radio limitado mantiene el grafo interactivo sin bajar toda la localidad rural.
 SUBA_CENTER = (4.7413, -74.0837)  # lat, lon
-RADIO_METROS = 2200
+RADIO_METROS = 2200  # Radio del extracto histórico data/suba_osm.json.
+# El piloto dinámico mide el radio desde el patio definido en la primera fila.
+RADIO_MAX_METROS = 15_000
+MAX_PUNTOS_PILOTO = 51  # Un patio y hasta 50 clientes; matriz cuadrática acotada.
 
-# Descarga: primero la API oficial de OSM (bbox); Overpass es el respaldo.
+# Servidores del piloto dinámico (OSMnx añade /interpreter a la URL base).
 OVERPASS_URLS = (
-    "https://overpass.osm.ch/api/interpreter",
     "https://overpass-api.de/api/interpreter",
-    "https://lz4.overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 )
 OVERPASS_HEADERS = {

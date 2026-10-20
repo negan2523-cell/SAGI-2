@@ -692,7 +692,7 @@ def confirmar_y_generar_instancia(n_clicks, contents, filename, col_id, col_lat,
             return no_update, no_update, no_update, f"Error Interno Inesperado: {str(e)}"
 
         instancia_cliente._session_id = hash_archivo
-        if len(CACHE_INSTANCIAS) > 16:
+        if len(CACHE_INSTANCIAS) >= 1:
             CACHE_INSTANCIAS.pop(next(iter(CACHE_INSTANCIAS)))
         CACHE_INSTANCIAS[hash_archivo] = instancia_cliente
 

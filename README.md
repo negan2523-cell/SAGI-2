@@ -10,17 +10,54 @@ pip install -r requirements.txt
 python app.py   # http://127.0.0.1:8051
 ```
 
-- `data/suba_osm.json` (extracto OSM, licencia ODbL) va versionado para que la app funcione sin
-  internet. Si se borra, se vuelve a descargar (API oficial de OSM y, de respaldo, Overpass).
-- `data/suba_instancia.json` es una caché derivada (grafo, puntos, matriz de distancias) y se
-  regenera sola en el primer arranque.
-- El patio y los 28 puntos de acumulación son sintéticos (semilla fija), no datos operativos reales.
+## Piloto en Render Free
+
+- Sube un CSV o Excel con `latitud`, `longitud` y `demanda` en kg y confirma el mapeo de
+  columnas. **La primera fila es el patio**; se admiten hasta **50 puntos de recolección**.
+- Todos los puntos deben estar dentro de **15 km en línea recta desde el patio**. El
+  recorrido por calles puede ser más largo. No hace falta descargar un círculo completo:
+  se consulta la caja que contiene los puntos, con 500 m de margen para accesos.
+- Las coordenadas deben ser finitas y las demandas no negativas. Si no hay una vía
+  conectada de ida y vuelta a menos de 500 m, se pide corregir el punto; no se inventan
+  distancias para puntos inaccesibles.
+- La red dinámica requiere internet y consulta dos servidores Overpass con un
+  timeout de 25 s por petición y sin reintentos ilimitados ante saturación. La caché de
+  descargas está en `/tmp/osmnx_cache`; Render la pierde al reiniciar la instancia.
+- Las descargas se procesan de una en una. La matriz usa una búsqueda por origen y solo
+  conserva los caminos entre los puntos del archivo y sus geometrías. La caché en memoria
+  retiene un único archivo reciente; las sesiones se guardan en `/tmp/dash_cache`.
+- Usa **un solo proceso** para este piloto. El arranque disponible es `python app.py`
+  (escucha en `0.0.0.0` y usa el `PORT` de Render). La instalación es
+  `pip install -r requirements.txt`. El motor usa OSMnx 2.x.
+- El límite de 15 km acota los datos de entrada, pero el consumo durante la construcción
+  depende de la densidad vial. Empieza con pocos puntos y aumenta gradualmente; no es una
+  garantía de que cualquier zona de 15 km quepa en la memoria de Render Free.
+
+Ejemplo de CSV (demanda del patio ignorada):
+
+```csv
+latitud,longitud,demanda
+4.7413,-74.0837,0
+4.7423,-74.0837,120
+4.7423,-74.0827,180
+```
+
+`data/suba_osm.json` es un extracto histórico pequeño de Suba (licencia ODbL), utilizado
+para pruebas sin internet. No cubre un radio de 15 km y no sustituye automáticamente las
+consultas dinámicas. `data/suba_instancia.json` pertenece a la versión anterior del motor.
+
+Pruebas locales, sin llamar a servicios externos:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Asistente de IA
 
 Debajo de los conductores hay un chat que responde preguntas sobre el escenario en pantalla
 (rutas, horarios, cargas, costos, puntos sin recoger). Usa cualquier API compatible con OpenAI
-(OpenRouter, Groq, DeepSeek, ...). Copia `.env.example` como `.env` y completa:
+(OpenRouter, Groq, DeepSeek, ...). Crea un archivo `.env` en la raíz o configura estas
+variables en Render (el mapeo inicial de columnas también usa esta API):
 
 - `LLM_API_KEY`: tu clave (no se sube a git: `.env` está en `.gitignore`).
 - `LLM_MODEL`: el modelo, con el nombre que usa tu proveedor.

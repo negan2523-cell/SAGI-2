@@ -1,13 +1,32 @@
-"""Red vial dirigida desde OpenStreetMap y matriz de distancias (Pipeline Dinámico Optimizado)."""
+"""Red vial dirigida y distancias por calles para el piloto en Render Free."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from heapq import heappop, heappush
+from threading import Lock
 
 import networkx as nx
 import osmnx as ox
 import pandas as pd
+import requests
+
+from src.config import MAX_PUNTOS_PILOTO, OVERPASS_URLS, RADIO_MAX_METROS
+
+
+# OSMnx usa configuración global. Serializar también evita construir dos redes a la vez.
+_CARGA_LOCK = Lock()
+_ESPEJOS = tuple(url.removesuffix("/interpreter") for url in OVERPASS_URLS)
+_BUFFER_METROS = 500
+_MAX_SNAP_METROS = 500
+
+
+def _comprobar_respuesta(respuesta: requests.Response, **kwargs) -> requests.Response:
+    # OSMnx reintenta 429/504 sin límite y espera 55 s entre intentos.
+    # Elevar aquí permite pasar al siguiente espejo dentro del timeout del piloto.
+    respuesta.raise_for_status()
+    return respuesta
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -17,7 +36,7 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dphi = math.radians(lat2 - lat1)
     dl = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
+    return 2 * r * math.asin(math.sqrt(min(1.0, max(0.0, a))))
 
 
 @dataclass
@@ -54,168 +73,179 @@ class InstanciaVRP:
         return lats, lons
 
 
-def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
-    """
-    Ingesta dinámica de puntos geográficos para construir el grafo OSM y la matriz de ruteo.
-    Se asume que el df contiene al menos: 'latitud', 'longitud' y 'demanda'.
-    La primera fila se considerará el patio (depot).
-    """
-    if len(df) < 2:
-        raise ValueError("El archivo debe contener al menos 2 filas (1 patio y 1 punto de recolección).")
-
-    # --- ZONA DE VALIDACIÓN PRE-VUELO (Fail-Fast) ---
-    min_lat = float(df["latitud"].min())
-    max_lat = float(df["latitud"].max())
-    min_lon = float(df["longitud"].min())
-    max_lon = float(df["longitud"].max())
-
-    diagonal_m = _haversine_m(min_lat, min_lon, max_lat, max_lon)
-    if diagonal_m > 25000:
+def _validar_puntos(df: pd.DataFrame) -> pd.DataFrame:
+    columnas = ["latitud", "longitud", "demanda"]
+    if not set(columnas).issubset(df.columns):
+        raise ValueError("El archivo debe contener latitud, longitud y demanda.")
+    if not 2 <= len(df) <= MAX_PUNTOS_PILOTO:
         raise ValueError(
-            "Los puntos están demasiado dispersos (distancia superior a 25 km). "
-            "Este sistema está optimizado para ruteo urbano local. "
-            "Por favor, revisa posibles errores en las coordenadas de tu archivo."
+            f"El piloto admite de 2 a {MAX_PUNTOS_PILOTO} filas "
+            "(la primera es el patio; las demás, puntos de recolección)."
         )
+    try:
+        puntos = df[columnas].astype(float)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Latitud, longitud y demanda deben ser numéricas.") from exc
+    if not all(math.isfinite(v) for fila in puntos.itertuples(index=False, name=None) for v in fila):
+        raise ValueError("Latitud, longitud y demanda no pueden contener valores vacíos o infinitos.")
+    if not puntos["latitud"].between(-85, 85).all() or not puntos["longitud"].between(-180, 180).all():
+        raise ValueError("Coordenadas fuera de rango: latitud entre -85 y 85, longitud entre -180 y 180.")
+    if (puntos["demanda"] < 0).any():
+        raise ValueError("La demanda no puede ser negativa.")
+    lat_patio, lon_patio = puntos.iloc[0][["latitud", "longitud"]]
+    for lat, lon in puntos[["latitud", "longitud"]].itertuples(index=False, name=None):
+        if _haversine_m(lat_patio, lon_patio, lat, lon) > RADIO_MAX_METROS:
+            raise ValueError("Todos los puntos deben estar dentro de un radio de 15 km del patio (primera fila).")
+    # La caja no puede cruzar el antimeridiano en este piloto urbano.
+    if puntos["longitud"].max() - puntos["longitud"].min() > 180:
+        raise ValueError("El piloto no admite zonas que crucen el meridiano de 180°.")
+    return puntos
 
-    # --- BOUNDING BOX CON BUFFER AJUSTADO ---
-    delta_lat = max_lat - min_lat
-    delta_lon = max_lon - min_lon
 
-    buffer_lat = max(delta_lat * 0.15, 0.002)
-    buffer_lon = max(delta_lon * 0.15, 0.002)
+def _descargar_grafo(bbox: tuple[float, float, float, float]) -> nx.MultiDiGraph:
+    configuracion = {
+        "log_console": False,
+        "use_cache": True,
+        "cache_folder": "/tmp/osmnx_cache",
+        "overpass_rate_limit": False,
+        "http_user_agent": "SAGI-Suba-App/1.0",
+        "requests_timeout": 25,
+        "useful_tags_node": [],
+        "useful_tags_way": ["highway", "oneway", "junction"],
+        "requests_kwargs": {"hooks": {"response": _comprobar_respuesta}},
+        "overpass_url": _ESPEJOS[0],
+    }
+    anterior = {clave: getattr(ox.settings, clave) for clave in configuracion}
+    try:
+        for clave, valor in configuracion.items():
+            setattr(ox.settings, clave, valor)
+        ultimo_error = None
+        for espejo in _ESPEJOS:
+            ox.settings.overpass_url = espejo
+            try:
+                # OSMnx 2: (oeste, sur, este, norte), en una sola tupla.
+                return ox.graph_from_bbox(bbox, network_type="drive", simplify=True)
+            except (requests.RequestException, ox._errors.InsufficientResponseError) as exc:
+                ultimo_error = exc.with_traceback(None)
+        raise RuntimeError(
+            "No se pudo obtener una red vial de Overpass para estos puntos. "
+            f"Intenta de nuevo más tarde. Detalle: {ultimo_error}"
+        ) from ultimo_error
+    finally:
+        for clave, valor in anterior.items():
+            setattr(ox.settings, clave, valor)
 
-    bbox_north = max_lat + buffer_lat
-    bbox_south = min_lat - buffer_lat
-    bbox_east = max_lon + buffer_lon  # Corregido: antes era buffer_lat
-    bbox_west = min_lon - buffer_lon
 
-    # --- CONFIGURACIÓN DE RED CON FAILOVER RÁPIDO Y CACHÉ EN DISCO ---
-    # Eliminado el servidor de mail.ru que ocasiona el timeout
-    espejos = [
-        "https://overpass-api.de/api",
-        "https://overpass.kumi.systems/api",
-    ]
+def _grafo_ligero(multi: nx.MultiDiGraph) -> nx.DiGraph:
+    """Conserva solo coordenadas, longitudes y geometría de la arista más corta."""
+    grafo = nx.DiGraph()
+    for nodo, datos in multi.nodes(data=True):
+        grafo.add_node(nodo, lat=float(datos["y"]), lon=float(datos["x"]))
+    for a, b, datos in multi.edges(data=True):
+        longitud = float(datos["length"])
+        if not grafo.has_edge(a, b) or longitud < grafo[a][b]["length"]:
+            grafo.add_edge(a, b, length=longitud, geometry=datos.get("geometry"))
+    return grafo
 
-    G: nx.DiGraph | None = None
-    ultimo_error = ""
 
-    for espejo in espejos:
-        try:
-            # Configuración específica y obligatoria para OSMnx 1.8+
-            ox.settings.log_console = False
-            ox.settings.use_cache = True
-            ox.settings.cache_folder = "/tmp/osmnx_cache"
-            ox.settings.overpass_endpoint = espejo
-            ox.settings.overpass_rate_limit = False  # Crítico: evita pausas forzadas que agotan el timeout
-            ox.settings.http_headers = {"User-Agent": "SAGI-Suba-App/1.0 (negan2523@gmail.com)"}
-            ox.settings.timeout = 25
-            ox.settings.requests_timeout = 25
-
-            G_multi = ox.graph_from_bbox(
-                north=bbox_north,
-                south=bbox_south,
-                east=bbox_east,
-                west=bbox_west,
-                network_type="drive",
-                simplify=True,
-            )
-            from osmnx import utils_graph
-            G_candidato = utils_graph.get_digraph(G_multi, weight="length")
-
-            if G_candidato is not None and len(G_candidato) > 0:
-                G = G_candidato
-                break
-
-        except Exception as e:
-            ultimo_error = str(e)
+def _dijkstra_hasta(
+    grafo: nx.DiGraph, origen: int, destinos: set[int],
+) -> tuple[dict[int, float], dict[int, int]]:
+    """Un padre por nodo; termina al alcanzar todos los puntos de la matriz."""
+    pendientes = destinos - {origen}
+    distancias = {origen: 0.0}
+    padres = {}
+    cola = [(0.0, origen)]
+    visitados = set()
+    while cola and pendientes:
+        distancia, nodo = heappop(cola)
+        if nodo in visitados:
             continue
+        visitados.add(nodo)
+        pendientes.discard(nodo)
+        if not pendientes:
+            break
+        for vecino, datos in grafo[nodo].items():
+            propuesta = distancia + datos["length"]
+            if vecino not in visitados and propuesta < distancias.get(vecino, math.inf):
+                distancias[vecino] = propuesta
+                padres[vecino] = nodo
+                heappush(cola, (propuesta, vecino))
+    return distancias, padres
 
-    if G is None:
-        raise RuntimeError(f"Todos los servidores públicos están caídos o saturados. Último error: {ultimo_error}")
 
-    # --- PODA A COMPONENTE FUERTEMENTE CONEXO (GARANTIZA RUTAS DE IDA Y VUELTA) ---
-    componentes_fuertes = list(nx.strongly_connected_components(G))
-    if componentes_fuertes:
-        mayor_componente = max(componentes_fuertes, key=len)
-        if len(mayor_componente) >= len(df):
-            G = G.subgraph(mayor_componente).copy()
+def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
+    """Primera fila = patio; hasta 50 clientes a 15 km del patio en línea recta."""
+    puntos = _validar_puntos(df)
+    with _CARGA_LOCK:
+        return _construir_instancia(puntos)
 
-    coords_grafo: list[tuple[int, float, float]] = []
-    for n, data in G.nodes(data=True):
-        lat_n = float(data.get("y", 0.0))
-        lon_n = float(data.get("x", 0.0))
-        data["lat"] = lat_n
-        data["lon"] = lon_n
-        coords_grafo.append((n, lat_n, lon_n))
 
-    # --- IDENTIFICACIÓN (SNAPPING) EN O(V) SIN ORDENAR TODO EL GRAFO ---
-    nodos_proyectados: list[int] = []
-    nodos_usados: set[int] = set()
+def _construir_instancia(puntos: pd.DataFrame) -> InstanciaVRP:
+    lats = puntos["latitud"].tolist()
+    lons = puntos["longitud"].tolist()
+    # Descargar solo la extensión de los puntos, con margen fijo para calles de acceso.
+    buffer_lat = math.degrees(_BUFFER_METROS / 6371000)
+    buffer_lon = buffer_lat / math.cos(math.radians(lats[0]))
+    bbox = (
+        min(lons) - buffer_lon, min(lats) - buffer_lat,
+        max(lons) + buffer_lon, max(lats) + buffer_lat,
+    )
+    if bbox[0] < -180 or bbox[2] > 180:
+        raise ValueError("El piloto no admite zonas que crucen el meridiano de 180°.")
+    multi = _descargar_grafo(bbox)
+    grafo = _grafo_ligero(multi)
+    del multi  # Evitar retener el MultiDiGraph y sus etiquetas durante el ruteo.
+    componente = max(nx.strongly_connected_components(grafo), key=len, default=set())
+    if len(componente) < len(puntos):
+        raise ValueError("No hay suficientes nodos viales conectados para todos los puntos del archivo.")
+    grafo.remove_nodes_from(set(grafo) - componente)
 
-    lats = df["latitud"].astype(float).tolist()
-    lons = df["longitud"].astype(float).tolist()
-    # Precalculamos el factor cos_lat para acelerar el cálculo de distancia pseudo-euclidiana
+    coords = [(n, d["lat"], d["lon"]) for n, d in grafo.nodes(data=True)]
+    usados = set()
+    ids = []
     cos_lat = math.cos(math.radians(lats[0]))
-
-    for lat_punto, lon_punto in zip(lats, lons):
-        # En lugar de sort(), usamos min() con fórmula de distancia plana para no sobrecargar CPU
+    for fila, (lat, lon) in enumerate(zip(lats, lons), start=1):
         candidato = min(
-            (n for n in coords_grafo if n[0] not in nodos_usados),
-            key=lambda n: (lat_punto - n[1]) ** 2 + ((lon_punto - n[2]) * cos_lat) ** 2,
-            default=coords_grafo[0],
+            (n for n in coords if n[0] not in usados),
+            key=lambda n: (lat - n[1]) ** 2 + ((lon - n[2]) * cos_lat) ** 2,
         )
-        nodo_elegido = candidato[0]
-        nodos_proyectados.append(nodo_elegido)
-        nodos_usados.add(nodo_elegido)
+        if _haversine_m(lat, lon, candidato[1], candidato[2]) > _MAX_SNAP_METROS:
+            raise ValueError(
+                f"La fila {fila} está a más de {_MAX_SNAP_METROS} m de una vía "
+                "disponible con rutas de ida y vuelta. Revisa las coordenadas."
+            )
+        ids.append(candidato[0])
+        usados.add(candidato[0])
 
-    # --- ASIGNACIÓN HEURÍSTICA DE PUNTOS ---
-    depot = nodos_proyectados[0]
-    clientes = nodos_proyectados[1:]
-
-    demandas_array = df["demanda"].astype(float).values
-    demanda: dict[int, float] = {depot: 0.0}
-
-    for i, nodo_cliente in enumerate(clientes):
-        demanda[nodo_cliente] = float(demandas_array[i + 1])
-
-    # --- MATRIZ DE DISTANCIAS LIGERA (SOLO RECONSTRUYE CAMINOS ACTIVOS) ---
-    ids_activos = [depot, *clientes]
-    n_puntos = len(ids_activos)
-
-    matriz_m = [[0.0] * n_puntos for _ in range(n_puntos)]
-    caminos: dict[tuple[int, int], list[int]] = {}
-
-    for i, origen in enumerate(ids_activos):
-        try:
-            # Dijkstra ligero: retorna diccionario de distancias y diccionario de predecesores
-            pred, dist_dict = nx.dijkstra_predecessor_and_distance(G, origen, weight="length")
-        except nx.NetworkXNoPath:
-            pred, dist_dict = {}, {}
-
-        for j, destino in enumerate(ids_activos):
+    matriz = [[0.0] * len(ids) for _ in ids]
+    caminos = {}
+    for i, origen in enumerate(ids):
+        distancias, padres = _dijkstra_hasta(grafo, origen, usados)
+        for j, destino in enumerate(ids):
             if i == j:
                 continue
+            if destino not in distancias:
+                raise ValueError("No existe una ruta de ida y vuelta entre todos los puntos.")
+            matriz[i][j] = distancias[destino]
+            camino = [destino]
+            while camino[-1] != origen:
+                camino.append(padres[camino[-1]])
+            camino.reverse()
+            caminos[(origen, destino)] = camino
 
-            if destino in dist_dict:
-                matriz_m[i][j] = float(dist_dict[destino])
-                
-                # Reconstruir camino de forma rápida navegando hacia atrás
-                camino = [destino]
-                actual = destino
-                while actual != origen and pred.get(actual):
-                    actual = pred[actual][0]
-                    camino.append(actual)
-                camino.reverse()
-                caminos[(origen, destino)] = camino
-            else:
-                matriz_m[i][j] = 999999.0
-                caminos[(origen, destino)] = []
-
+    # El mapa y el solver solo necesitan la unión de los caminos calculados.
+    # No guardar toda la ciudad en cada sesión/caché de Dash.
+    compacto = nx.DiGraph()
+    for camino in caminos.values():
+        for nodo in camino:
+            if nodo not in compacto:
+                compacto.add_node(nodo, **grafo.nodes[nodo])
+        for a, b in zip(camino, camino[1:]):
+            if not compacto.has_edge(a, b):
+                compacto.add_edge(a, b, **grafo[a][b])
     return InstanciaVRP(
-        grafo=G,
-        depot=depot,
-        clientes=clientes,
-        demanda=demanda,
-        matriz_m=matriz_m,
-        caminos=caminos,
+        grafo=compacto, depot=ids[0], clientes=ids[1:],
+        demanda={n: (0.0 if i == 0 else float(puntos.iloc[i]["demanda"])) for i, n in enumerate(ids)},
+        matriz_m=matriz, caminos=caminos,
     )

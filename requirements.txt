@@ -5,5 +5,5 @@ numpy>=2.0
 pandas>=2.2
 requests>=2.32
 dash-extensions>=1.0.0
-osmnx>=2
+osmnx>=2.0,<3.0
 openpyxl>=3.1.0

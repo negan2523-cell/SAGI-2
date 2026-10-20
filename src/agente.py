@@ -28,25 +28,26 @@ INSTRUCCIONES = (
     "funciones o archivos cuando ayude. Si algo no está en esa información, dilo en lugar de "
     "inventarlo. "
     "Cuando des cifras, cítalas del escenario. Puedes sugerir qué slider mover para mejorar "
-    "un indicador, pero aclara que es una estimación hasta recalcular. El patio y los puntos "
-    "de acumulación son sintéticos, no datos operativos reales."
+    "un indicador, pero aclara que es una estimación hasta recalcular. La simulación usa las "
+    "coordenadas y demandas del archivo del usuario; "
+    "no asumas que son datos operativos reales."
 )
 
 FICHA_TECNICA = """FICHA TÉCNICA DEL SIMULADOR
 - App web en Python (Dash + Plotly). Cada vez que se mueve un slider se vuelve a resolver el
   problema completo y se redibujan mapa, indicadores, conductores y sus mapas.
-- Red vial: calles reales de OpenStreetMap en un radio de 2,2 km alrededor del centro de Suba
-  (API oficial de OSM; Overpass como respaldo). Se modela como un grafo dirigido ponderado
-  G=(V,E) con networkx: nodos = intersecciones/puntos de las vías, aristas = tramos de calle,
-  peso = longitud en metros (haversine). Respeta calles de un solo sentido (oneway), glorietas
-  y autopistas. Se conserva la mayor componente fuertemente conexa (desde cualquier nodo se
-  puede llegar a cualquier otro respetando los sentidos).
+- Red vial: calles reales de OpenStreetMap descargadas de Overpass para la extensión de
+  los puntos cargados, con margen de 500 m. El piloto admite un patio en la primera fila
+  y hasta 50 puntos, a un máximo de 15 km en línea recta desde el patio. Usa OSMnx 2 y un
+  grafo dirigido ponderado con networkx: nodos = intersecciones, aristas = tramos de calle,
+  peso = longitud en metros. Respeta sentidos viales; conserva la mayor componente
+  fuertemente conexa y rechaza puntos a más de 500 m de una vía disponible.
 - Cada arista conserva su geometría OSM y el mapa dibuja sus coordenadas, incluidos los
   vértices intermedios de los LineStrings, en lugar de unir solo las paradas.
-- Instancia: patio y 28 puntos de acumulación sintéticos (semilla fija), ubicados sobre nodos
-  del grafo. Entre cada par de puntos se calcula el camino más corto por calles con Dijkstra
-  (nx.shortest_path, peso = longitud). Las distancias son por calle, no en línea recta, y
-  pueden ser distintas de ida y de vuelta. Grafo, puntos y matriz se guardan en caché JSON.
+- Instancia: patio, coordenadas y demandas proceden del archivo del usuario. Se calculan
+  caminos más cortos dirigidos con Dijkstra, una búsqueda por origen, hasta alcanzar los
+  demás puntos. Las distancias son por calle y pueden diferir de ida y vuelta. La sesión
+  solo conserva la unión de esos caminos; las descargas y sesiones usan cachés temporales.
 - Ruteo: CVRP con límite de jornada (sin ventanas horarias por punto). Heurística de ahorros
   de Clarke-Wright en dos variantes (ahorro dirigido y clásico), mejora 2-opt por ruta y, si
   hay más rutas que vehículos, reinserción de los puntos sobrantes en rutas existentes. Se
