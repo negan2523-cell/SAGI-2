@@ -87,40 +87,53 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     bbox_east = max_lon + buffer_lon
     bbox_west = min_lon - buffer_lon
 
-# --- CONFIGURACIÓN ESTRICTA DE RED OSMNX (SOPORTE MULTI-VERSIÓN) ---
-    espejo = "https://overpass.kumi.systems/api" # Servidor suizo de alta tolerancia a nubes
+# --- CONFIGURACIÓN ESTRICTA DE RED OSMNX (TOLERANCIA A FALLOS) ---
+    espejos = [
+        "https://maps.mail.ru/osm/tools/overpass/api",  # 1. Mail.ru (Muy rápido, no bloquea nubes)
+        "https://overpass-api.de/api",                  # 2. Alemania (Principal, posible fin del ban temporal)
+        "https://overpass.kumi.systems/api"             # 3. Suiza (Lento, pero sirve de último recurso)
+    ]
     
-    # 1. En OSMnx 1.x, es OBLIGATORIO usar ox.config() para que el motor interno cambie de servidor.
-    if hasattr(ox, 'config'):
-        ox.config(
-            log_console=False,
-            overpass_endpoint=espejo,
-            http_headers={'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'},
-            timeout=300
-        )
-    else:
-        # Para versiones modernas (OSMnx 2.0+)
-        ox.settings.log_console = False
-        ox.settings.overpass_url = espejo
-        ox.settings.http_headers = {'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'}
-        ox.settings.timeout = 300
+    G_multi = None
+    ultimo_error = ""
 
-    try:
-        # 2. Detectar la versión instalada en Render para enviar las coordenadas en el orden que exige cada versión
-        version_mayor = int(ox.__version__.split('.')[0]) if hasattr(ox, '__version__') else 1
-        
-        if version_mayor >= 2:
-            # Formato estricto para OSMnx 2.0+ (Tupla Bbox: Left, Bottom, Right, Top)
-            G_multi = ox.graph_from_bbox(bbox=(bbox_west, bbox_south, bbox_east, bbox_north), network_type='drive')
-            G = ox.convert.to_digraph(G_multi, weight='length')
-        else:
-            # Formato estricto para OSMnx 1.x (Parámetros nombrados explícitamente para evitar inversión de mapa)
-            G_multi = ox.graph_from_bbox(north=bbox_north, south=bbox_south, east=bbox_east, west=bbox_west, network_type='drive')
-            from osmnx import utils_graph
-            G = utils_graph.get_digraph(G_multi, weight='length')
+    for espejo in espejos:
+        try:
+            # 1. Configuración de endpoint dinámico
+            if hasattr(ox, 'config'):
+                ox.config(
+                    log_console=False,
+                    overpass_endpoint=espejo,
+                    http_headers={'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'},
+                    timeout=300
+                )
+            else:
+                ox.settings.log_console = False
+                ox.settings.overpass_url = espejo
+                ox.settings.http_headers={'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'}
+                ox.settings.timeout = 300
+
+            # 2. Descarga multi-versión
+            version_mayor = int(ox.__version__.split('.')[0]) if hasattr(ox, '__version__') else 1
             
-    except Exception as e:
-        raise RuntimeError(f"Fallo técnico al procesar el mapa. Detalle: {str(e)}")
+            if version_mayor >= 2:
+                G_multi = ox.graph_from_bbox(bbox=(bbox_west, bbox_south, bbox_east, bbox_north), network_type='drive')
+                G = ox.convert.to_digraph(G_multi, weight='length')
+            else:
+                G_multi = ox.graph_from_bbox(north=bbox_north, south=bbox_south, east=bbox_east, west=bbox_west, network_type='drive')
+                from osmnx import utils_graph
+                G = utils_graph.get_digraph(G_multi, weight='length')
+                
+            # Si llegamos a esta línea, la descarga fue un éxito. Rompemos el ciclo.
+            break 
+            
+        except Exception as e:
+            ultimo_error = str(e)
+            continue  # Falló este servidor, saltamos inmediatamente al siguiente
+
+    # 3. Validación final
+    if G_multi is None:
+        raise RuntimeError(f"Todos los servidores públicos están caídos o saturados. Último error: {ultimo_error}")
 
     for n, data in G.nodes(data=True):
         data['lat'] = data.get('y', 0.0)
