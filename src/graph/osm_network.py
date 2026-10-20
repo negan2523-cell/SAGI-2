@@ -88,8 +88,15 @@ def cargar_instancia(df: pd.DataFrame) -> InstanciaVRP:
     bbox_west = min_lon - buffer_lon
 
 # --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
+   # --- CONFIGURACIÓN ESTRICTA DE RED OSMNX ---
     ox.settings.log_console = False
-    ox.settings.overpass_url = "https://overpass.openstreetmap.fr/api"
+    
+    # Espejo público oficial alternativo para evadir bloqueos de IP en la nube
+    ox.settings.overpass_url = "https://maps.mail.ru/osm/tools/overpass/api"
+    
+    # (Agregamos 'overpass_endpoint' por compatibilidad si tu servidor Render instaló un osmnx antiguo)
+    ox.settings.overpass_endpoint = "https://maps.mail.ru/osm/tools/overpass/api"
+    
     ox.settings.http_headers = {'User-Agent': 'SAGI-Suba-App/1.0 (negan2523@gmail.com)'}
     ox.settings.timeout = 300
     
